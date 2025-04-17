@@ -1,48 +1,48 @@
-begin
-    using Agents, Agents.Pathfinding
-using Random
-using ColorTypes
-using ImageMagick
-using FileIO: load
-using GLMakie 
-using InteractiveDynamics
-using Images
-using DataFrames
-using Statistics
-end
+begin                                   # This is a block of code that will be executed together
+    using Agents, Agents.Pathfinding    # Load the Agents and Agents.Pathfinding modules
+using Random                            # Load the Random module
+using ColorTypes                        # Load the ColorTypes module
+using ImageMagick                       # Load the ImageMagick module
+using FileIO: load                      # Load the load function from the FileIO module
+using GLMakie                           # Load the GLMakie module
+using InteractiveDynamics               # Load the InteractiveDynamics module
+using Images                            # Load the Images module
+using DataFrames                        # Load the DataFrames module
+using Statistics                        # Load the Statistics module
+end                                     # End of the block of code
 
-@agent AgentEscapes ContinuousAgent{2} begin
-    age::Float64
-    mass::Float64
-    toxicload::Float64
-    pathX::Vector{Float64}
-    pathY::Vector{Float64}
-    TL1::Vector{Float64}
-    TL2::Vector{Float64}
-    TL3::Vector{Float64}
-end
+@agent AgentEscapes ContinuousAgent{2} begin    # Define the AgentEscapes agent type
+    age::Float64                                # Age of the agent - Float64
+    mass::Float64                               # Mass of the agent - Float64
+    toxicload::Float64                          # Toxic load of the agent - Float64
+    pathX::Vector{Float64}                      # X-coordinate of the agent's path - Vector{Float64}
+    pathY::Vector{Float64}                      # Y-coordinate of the agent's path - Vector{Float64}
+    TL1::Vector{Float64}                        # Toxic Load 1 - Vector{Float64}
+    TL2::Vector{Float64}                        # Toxic Load 2 - Vector{Float64}
+    TL3::Vector{Float64}                        # Toxic Load 3 - Vector{Float64}
+end                                             # End of the AgentEscapes agent type
 
 
-    heightmap_data = load("Maps/Qatargas Map.jpg")
-    heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
-    heightmap = floor.(Int, convert.(Float64, heightmap_data)*255)
-    concentration_data = load("Maps/concentrationmap new.jpg")
-    concentration_data = permutedims(channelview(concentration_data ), [2,3,1])[:,:,1]
-    concentrationmap = floor.(Int, convert.(Float64, concentration_data .*500))
+    heightmap_data = load("Maps/Qatargas Map.jpg")                                      # Load the heightmap data
+    heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]           # Permute the dimensions of the heightmap data
+    heightmap = floor.(Int, convert.(Float64, heightmap_data)*255)                      # Convert the heightmap data to a 2D array of integers
+    concentration_data = load("Maps/concentrationmap new.jpg")                          # Load the concentration data 
+    concentration_data = permutedims(channelview(concentration_data ), [2,3,1])[:,:,1]  # Permute the dimensions of the concentration data
+    concentrationmap = floor.(Int, convert.(Float64, concentration_data .*500))         # Convert the concentration data to a 2D array of integers
     
-    dt = 1.   ## discrete timestep each iteration of the model
-    seed = 123  ## seed for random number generator
-    n_agents = 3
-    toxicity_rate = 0.07
-    age_range = (22,60)
-    speed_range = (4.0,7.0)
-    speed = 5.
-    mass_range = (50,80)
-    ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)
-    ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)
+    dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
+    seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    n_agents = 3                                                        # Define the n_agents variable as 3
+    toxicity_rate = 0.07                                                # Define the toxicity_rate variable as 0.07
+    age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
+    speed_range = (4.0,7.0)                                             # Define the speed_range variable as a tuple of 4.0 and 7.0
+    speed = 5.                                                          # Define the speed variable as 5 
+    mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
+    ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)    # Define the ag_range_y variable as a range of values from the heightmap array # [1] stands for the 1st row
+    ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
     MW = 34 #Molecular weight of H2S in g/mol
-    dims = (size(heightmap))
-    walkmap = BitArray(trues(dims...))
+    dims = (size(heightmap))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    walkmap = BitArray(trues(dims...))                                  # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
  
 
     #goals
@@ -89,23 +89,23 @@ function calculate_dispersion(heightmap)
 end
 concentrationmap = calculate_dispersion(heightmap)  # Calculate toxic load based on position
 
-function setupToxic()
-    Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33] #min 
-    Arho = zeros(3, 6)
-    Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]
-    Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]
-    Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm
+function setupToxic()                                               # Define the setupToxic function
+    Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33] #min                # Define the Atime array as a 1x6 matrix                                    # Initialization of the 5 standard AEGL exposure times
+    Arho = zeros(3, 6)                                              # Define the Arho array as a 3x6 matrix                                     # the concentration of the three symptoms compared to the AEGL concentrations
+    Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]                   # Define the Arho array for the first row and columns 2 to 6                # odor
+    Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]         # Define the Arho array for the second row and columns 2 to 6               # irritation
+    Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm    # Define the Arho array for the third row and columns 2 to 6                # edema
     MW = 34 #Molecular Weight of H2S
-    Arho *= MW/24.04 #mg/m^3
-    Arho = Arho'
-    Atime = Atime*60 #seconds
-    taumin = 200.
-    taumax = 86400.
-    Brho = zeros(7,3)
-    Balpha = zeros(7,3)
-    rhomax = zeros(1,3)
-    rhomin = zeros(1,3)
-    Btime = zeros(7, 3)
+    Arho *= MW/24.04 #mg/m^3                                        # Multiply the Arho array by the molecular weight of H2S divided by 24.04
+    Arho = Arho'                                                    # Transpose the Arho array 
+    Atime = Atime*60 #seconds                                       # Multiply the Atime array by 60 seconds to convert to seconds              
+    taumin = 200.                                                   # Define the taumin variable as 200 seconds (Borris&Patnaik, 2014)          # shortest exposure time over which an AEGL 1, 2 or 3 onset can be reached
+    taumax = 86400.                                                 # Define the taumax variable as 86400 seconds (Borris&Patnaik, 2014)        # longest exposure time over which an AEGL 1, 2 or 3 onset can be reached
+    Brho = zeros(7,3)                                               # Define the Brho array as a 7x3 matrix of zeros                            # in ppm for each AEGL band at every time step ‘Atime’
+    Balpha = zeros(7,3)                                             # Define the Balpha array as a 7x3 matrix of zeros                          # power-law exponents
+    rhomax = zeros(1,3)                                             # Define the rhomax array as a 1x3 matrix of zeros                          # maximum concentration of H2S exposed by each agent
+    rhomin = zeros(1,3)                                             # Define the rhomin array as a 1x3 matrix of zeros                          # minimum concentration of H2S exposed by each agent
+    Btime = zeros(7, 3)                                             # Define the Btime array as a 7x3 matrix of zeros                           # represents an array, which is function of ‘taumin’ and ‘taumax’, that changes depending on alpha, which is a corresponsing array of power low exponents interpolating the ‘Brho’ table array
 
     #Initialize
     for k=1:3
@@ -189,7 +189,7 @@ function update_toxic_load(Ct, TLcurrent, dt)
         elseif Ct < Cmin
             TL_rate = 0.0;
         else
-            for i = 2:length(Btime)
+            for i = 2:eachindex(Btime)
                 if i-1 > 0 && i <= size(Brho, 2)
                     if Brho[k, i-1] < Ct < Brho[k, i] #check 
                         TL_rate = (1/Btime[i])*((Ct/Brho[k,i])^(Balpha[i-1])) #Toxic Load rate in units of s^-1 
@@ -261,9 +261,9 @@ function personcolor(person)
 end
 
 
-abmvideo(
-    "NADEEN TRIAL 16-H2S-Qatargas_.mp4", 
-    model, 
+InteractiveDynamics.abmvideo(
+    "GP_TRIAL_1.mp4",
+model,
     agent_step!,
     model_step!;
     figurekwargs = (resolution = size(heightmap),),
@@ -271,11 +271,12 @@ abmvideo(
     framerate = 15,
     ac = personcolor,
     as = 8,
+    figurekwargs = (resolution = size(model.properties[:heightmap]),),
     scatterkwargs = (strokecolor = :white, strokewidth = 1),
     heatarray = model -> penaltymap(model.pathfinder),
     heatkwargs = (colormap = :grays,),
     static_preplot!
-) 
+)
 
 
 #model = ABM(AgentEscapes, space; rng, properties)
