@@ -12,8 +12,7 @@ begin
     using DataFrames
     using Statistics
     using CairoMakie
-    using Makie
-    using ColorTypes: RGBf
+    #using Makie
 end
 
 begin
