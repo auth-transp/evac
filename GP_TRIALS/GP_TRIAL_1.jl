@@ -309,21 +309,9 @@ begin #Αποθήκευση αποτελεσμάτων σε αρχείο txt
 end
 
 
-#InteractiveDynamics.abmvideo(
-    #"GP_TRIAL_1.mp4",
-    #model,
-    #agent_step!,
-    #model_step!;
-    #figurekwargs = (resolution = size(model.properties[:heightmap]),),
-    #frames = 400,
-    #framerate = 15,
-    #ac = personcolor,
+
     #as = 8,
     #scatterkwargs = (strokecolor = :white, strokewidth = 1),
-    #heatarray = model -> penaltymap(model.pathfinder),
-    #heatkwargs = (colormap = :grays,),
-    #static_preplot!
-#)
 
 
 abmvideo(
