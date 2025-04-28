@@ -1,20 +1,20 @@
-begin                                  
+begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
     using Agents.Pathfinding
     using Random                        
     using ColorTypes                      
     using ImageMagick                 
     using FileIO: load                     
-    #using GLMakie                        
     using InteractiveDynamics             
     using Images                    
     using DataFrames           
     using Statistics
     using CairoMakie
-    #using Makie
-end                           
+    using DelimitedFiles
+    using Observables
+end                          
 
-@agent struct AgentEscapes(ContinuousAgent{2, Float64})
+@agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
     age::Float64
     mass::Float64
     toxicload::Float64
@@ -26,7 +26,7 @@ end
 end
 
 
-begin
+begin   # Φόρτωση του heightmap και του concentrationmap
     heightmap_data = load("Maps/Qatargas Map.jpg")                                      # Load the heightmap data
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]           # Permute the dimensions of the heightmap data
     heightmap = floor.(Int, convert.(Float64, heightmap_data)*255)                      # Convert the heightmap data to a 2D array of integers
@@ -36,7 +36,7 @@ begin
 end
 
 
-begin
+begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 3                                                        # Define the n_agents variable as 3
@@ -261,9 +261,25 @@ function model_step!(model)
 end
 
 
-function static_preplot!(ac, model)
-    model = model_obs[]
-    scatter!(ac, model.goal; color = (:red, 50), marker = 'o')
+function static_preplot!(ax, abmplot)
+    # 1) Ξεπακετάρουμε το Observable (στην περίπτωση του abmvideo είναι απευθείας Observable{ABM})
+    model = isa(abmplot, Observable) ? abmplot[] :
+            hasproperty(abmplot, :model) ? abmplot.model[] :
+            abmplot
+
+    # 2) Παίρνουμε το vector των goals – χάρη στο getproperty του Agents.jl, 
+    #    μπορούμε να κάνουμε απευθείας model.goal αντί για model.properties[:goal]
+    dests = model.goal
+
+    # 3) Χωρίζουμε στα επιμέρους x και y
+    xs = getindex.(dests, 1)
+    ys = getindex.(dests, 2)
+
+    # 4) Σχεδιάζουμε τους προορισμούς πριν τους agents
+    scatter!(ax, xs, ys;
+        color  = (:red, 50),
+        marker = 'o',
+    )
 end
 
 
@@ -278,19 +294,7 @@ function personcolor(person::AgentEscapes)
 end
 
 
-agent_records = DataFrame(step=Int[], id=Int[], pos=Any[], toxicload=Float64[])
-
-for step in 1:10
-    Agents.step!(model, agent_step!, model_step!, 1)
-    for agent in allagents(model)
-        push!(agent_records, (step=step, id=agent.id, pos=agent.pos, toxicload=agent.toxicload))
-    end
-end
-
-println(agent_records)
-
-
-begin #Αποθήκευση αποτελεσμάτων σε αρχείο txt
+#begin #Αποθήκευση αποτελεσμάτων σε αρχείο txt
     using DelimitedFiles
     # Επιλογή ονόματος αρχείου
     filename = "agent_records_output.txt"
@@ -306,33 +310,28 @@ begin #Αποθήκευση αποτελεσμάτων σε αρχείο txt
     end
 
     println("Τα αποτελέσματα αποθηκεύτηκαν στο αρχείο: $filename")
-end
+#end
 
 
-
-    #as = 8,
-    #scatterkwargs = (strokecolor = :white, strokewidth = 1),
-
-
-abmvideo(
-    "C:\\Users\\gavin\\Documents\\GitHub\\evac\\GP_TRIAL_1.mp4",
-    model;
-    dt = 1,
-    framerate = 15,
-    frames = 600,
-    title = "Evacuation Simulation",
-    showstep = true,
-    compression = 1,
-    profile = "high",
-    agent_color = personcolor,
-    agent_size = 8,
-    agent_shape = :circle,
-
-    heatarray = model -> penaltymap(model.pathfinder),
-    heatkwargs = (colormap = :grays,),
-    static_preplot! = static_preplot!,
-    #scatterkwargs = (strokecolor = :white, strokewidth = 1),
-    #heatmap = model -> penaltymap(model.pathfinder),
-    #heatkwargs = (colormap = :grays,),
-    #static_preplot!
+begin
+    abmvideo(
+        "C:\\Users\\gavin\\Documents\\GitHub\\evac\\GP_TRIAL_1.mp4",
+        model;
+        dt = 1,
+        framerate = 15,
+        frames = 600,
+        title = "Evacuation Simulation",
+        showstep = true,
+        compression = 1,
+        profile = "high",
+        agent_color = personcolor,
+        agent_size = 10,
+        agent_shape = :circle,
+        agent_speed = 8,
+        heatarray = model -> penaltymap(model.pathfinder),
+        heatkwargs = (colormap = :grays,),
+        static_preplot! = static_preplot!,
+        scatterkwargs = (strokecolor = :white, strokewidth = 1),
     )
+    println("Το βίντεο αποθηκεύτηκε ως GP_TRIAL_1.mp4")
+end
