@@ -12,6 +12,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using CairoMakie
     using DelimitedFiles
     using Observables
+    using Makie
 end                          
 
 @agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
@@ -92,16 +93,8 @@ for _ in 1:n_agents
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
     plan_best_route!(person, dests, model.pathfinder)
 end
-            
-#return model
 
 
-#function calculate_dispersion(heightmap)
-    #dims = (size(heightmap))
-    #return rand!(model.rng,zeros(dims))
-    #return concentrationmap
-#end
-#concentrationmap = calculate_dispersion(heightmap)
 
 function setupToxic()                                               # Define the setupToxic function
     Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33] #min                # Define the Atime array as a 1x6 matrix                                    # Initialization of the 5 standard AEGL exposure times
@@ -187,6 +180,8 @@ end
 
 Balpha, Btime, Brho = setupToxic()
 
+
+
 function update_toxic_load(Ct, TLcurrent, dt)
    
     #a = alpha
@@ -224,11 +219,6 @@ function update_toxic_load(Ct, TLcurrent, dt)
 end
  
 
-# function update_toxic_load!(person::AgEs, dt::Float64, toxicity_rate::Float64, heightmap::Array{Int, 2})
-#     position = floor.(Int, person.pos)  # Get agent's position and convert to integer
-#     # Update toxic load of the agent based on the three bands approach by Nawayd
-#     person.toxicload += toxicity_rate * concentrationmap[position[1], position[2]] * dt
-# end
 
 function agent_step!(person, model)
     position = floor.(Int, person.pos)
@@ -259,7 +249,6 @@ function agent_step!(person, model)
 end
 
 
-# position = clamp.(floor.(Int, AgentEscapes.pos), (1, 1), size(heightmap))
 
 function model_step!(model)
     for (a1, a2) in interacting_pairs(model, 0.012, :nearest)
@@ -268,25 +257,26 @@ function model_step!(model)
 end
 
 
+
 function static_preplot!(ax, abmplot)
-    # 1) Ξεπακετάρουμε το Observable (στην περίπτωση του abmvideo είναι απευθείας Observable{ABM})
-    model = isa(abmplot, Observable) ? abmplot[] :
+    # 1) Ξεπακετάρουμε το Observable
+    model = isa(abmplot, Observable)  ? abmplot[] :
             hasproperty(abmplot, :model) ? abmplot.model[] :
             abmplot
 
-    # 2) Παίρνουμε το vector των goals – χάρη στο getproperty του Agents.jl, 
-    #    μπορούμε να κάνουμε απευθείας model.goal αντί για model.properties[:goal]
+    # 2) Σχεδιάζουμε τα goals
     dests = model.goal
+    xs_g = getindex.(dests, 1)
+    ys_g = getindex.(dests, 2)
+    scatter!(ax, xs_g, ys_g; color = (:red, 50), marker = 'o')
 
-    # 3) Χωρίζουμε στα επιμέρους x και y
-    xs = getindex.(dests, 1)
-    ys = getindex.(dests, 2)
-
-    # 4) Σχεδιάζουμε τους προορισμούς πριν τους agents
-    scatter!(ax, xs, ys;
-        color  = (:red, 50),
-        marker = 'o',
-    )
+    # 3) Σχεδιάζουμε για κάθε agent τη διαδρομή που έχει ήδη κάνει
+    for agent in allagents(model)
+        xs = agent.pathX
+        ys = agent.pathY
+        # π.χ. χρώμα ίδια με τον agent, πάχος γραμμής 2
+        lines!(ax, xs, ys; linewidth = 2, color = personcolor(agent))
+    end
 end
 
 
@@ -301,44 +291,66 @@ function personcolor(person::AgentEscapes)
 end
 
 
-#begin #Αποθήκευση αποτελεσμάτων σε αρχείο txt
-    using DelimitedFiles
-    # Επιλογή ονόματος αρχείου
-    filename = "agent_records_output.txt"
+begin
+    # ———— 1) Στήσιμο βασικών παραμέτρων ————
+    const T = 300
 
-    # Δημιουργία header
-    open(filename, "w") do io
-        write(io, "step\tid\tpos\ttoxicload\n")  # Γράφει την πρώτη γραμμή (header)
+    # Figure & Axis
+    fig = Figure(resolution = (800,800))
+    ax  = Makie.Axis(fig[1,1];
+               title  = "Evacuation with Toxic Trails",
+               aspect = DataAspect())
 
-        for row in eachrow(agent_records)
-            pos_str = "($(row.pos[1]), $(row.pos[2]))"  # μετατροπή του Tuple σε string
-            write(io, "$(row.step)\t$(row.id)\t$pos_str\t$(row.toxicload)\n")
+    # Προαιρετικά heatmap και goals
+    heatmap!(ax, penaltymap(model.pathfinder); colormap=:grays, alpha=0.3)
+    goals = model.goal
+    scatter!(ax,
+        getindex.(goals,1),
+        getindex.(goals,2);
+        color  = (:red,50),
+        marker = :o,
+    )
+
+    # ———— 2) Δημιουργούμε τα observables για θέσεις & χρώματα ————
+    xs0 = [a.pos[1] for a in allagents(model)]
+    ys0 = [a.pos[2] for a in allagents(model)]
+    colors0 = [personcolor(a) for a in allagents(model)]
+
+    posobs = Observable(Point2f.(xs0, ys0))
+    colobs = Observable(colors0)
+
+    # 3) Φτιάχνουμε τα αντικείμενα που θα ανανεώνουμε
+    lines_plots = [
+        lines!(ax,
+            [a.pos[1]], [a.pos[2]];
+            color     = personcolor(a),
+            linewidth = 2)
+        for a in allagents(model)
+    ]
+
+    agent_scat = scatter!(ax, posobs;
+                          color      = colobs,
+                          markersize = 10)
+
+    # ———— 4) Το μοναδικό record loop ————
+    CairoMakie.record(fig, "EVAC_TOXIC_TRAILS_GP.mp4", 1:T) do _frame
+        # α) Κάνουμε ένα βήμα στο μοντέλο
+        step!(model, agent_step!, model_step!, 1)
+
+        # β) Ενημερώνουμε τα trails (lines) με το πλήρες history
+        for (i,a) in enumerate(allagents(model))
+            pts = Point2f.(a.pathX, a.pathY)
+            lines_plots[i][1][] = pts
         end
+
+        # γ) Ενημερώνουμε positions & colors στο scatter
+        xs = [a.pos[1] for a in allagents(model)]
+        ys = [a.pos[2] for a in allagents(model)]
+        posobs[] = Point2f.(xs, ys)
+
+        cols = [personcolor(a) for a in allagents(model)]
+        colobs[] = cols
     end
 
-    println("Τα αποτελέσματα αποθηκεύτηκαν στο αρχείο: $filename")
-#end
-
-
-begin
-    abmvideo(
-        "C:\\Users\\gavin\\Documents\\GitHub\\evac\\GP_TRIAL_1.mp4",
-        model;
-        dt = 1,
-        framerate = 15,
-        frames = 600,
-        title = "Evacuation Simulation",
-        showstep = true,
-        compression = 1,
-        profile = "high",
-        agent_color = personcolor,
-        agent_size = 10,
-        agent_shape = :circle,
-        agent_speed = 8,
-        heatarray = model -> penaltymap(model.pathfinder),
-        heatkwargs = (colormap = :grays,),
-        static_preplot! = static_preplot!,
-        scatterkwargs = (strokecolor = :white, strokewidth = 1),
-    )
-    println("Το βίντεο αποθηκεύτηκε ως GP_TRIAL_1.mp4")
+    println("Το animation με trails και δυναμικό χρώμα σώθηκε ως EVAC_TOXIC_TRAILS_GP.mp4")
 end
