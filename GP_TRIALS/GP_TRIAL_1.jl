@@ -71,11 +71,18 @@ begin
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
-        :goal => dests
+        goal = dests
     )
 end
 
-model = ABM(AgentEscapes, space; rng, properties)
+model = ABM(
+  AgentEscapes,
+  space;
+  rng          = rng,
+  properties   = properties,
+  agent_step!  = agent_step!,
+  model_step!  = model_step!
+)
     
 for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1])
