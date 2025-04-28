@@ -86,7 +86,7 @@ for _ in 1:n_agents
     plan_best_route!(person, dests, model.pathfinder)
 end
             
-return model
+#return model
 
 
 #function calculate_dispersion(heightmap)
@@ -261,7 +261,8 @@ function model_step!(model)
 end
 
 
-function static_preplot!(ac, model) 
+function static_preplot!(ac, model)
+    model = model_obs[]
     scatter!(ac, model.goal; color = (:red, 50), marker = 'o')
 end
 
@@ -334,5 +335,16 @@ abmvideo(
     title = "Evacuation Simulation",
     showstep = true,
     compression = 1,
-    profile = "high"
+    profile = "high",
+    agent_color = personcolor,
+    agent_size = 8,
+    agent_shape = :circle,
+
+    heatarray = model -> penaltymap(model.pathfinder),
+    heatkwargs = (colormap = :grays,),
+    static_preplot! = static_preplot!,
+    #scatterkwargs = (strokecolor = :white, strokewidth = 1),
+    #heatmap = model -> penaltymap(model.pathfinder),
+    #heatkwargs = (colormap = :grays,),
+    #static_preplot!
     )
