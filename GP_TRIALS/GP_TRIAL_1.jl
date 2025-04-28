@@ -308,19 +308,31 @@ begin #Αποθήκευση αποτελεσμάτων σε αρχείο txt
 end
 
 
-InteractiveDynamics.abmvideo(
-    "GP_TRIAL_1.mp4",
-model,
-    agent_step!,
-    model_step!;
-    figurekwargs = (resolution = size(heightmap),),
-    frames = 400,
+#InteractiveDynamics.abmvideo(
+    #"GP_TRIAL_1.mp4",
+    #model,
+    #agent_step!,
+    #model_step!;
+    #figurekwargs = (resolution = size(model.properties[:heightmap]),),
+    #frames = 400,
+    #framerate = 15,
+    #ac = personcolor,
+    #as = 8,
+    #scatterkwargs = (strokecolor = :white, strokewidth = 1),
+    #heatarray = model -> penaltymap(model.pathfinder),
+    #heatkwargs = (colormap = :grays,),
+    #static_preplot!
+#)
+
+
+abmvideo(
+    "C:\\Users\\gavin\\Documents\\GitHub\\evac\\GP_TRIAL_1.mp4",
+    model;
+    dt = 1,
     framerate = 15,
-    ac = personcolor,
-    as = 8,
-    figurekwargs = (resolution = size(model.properties[:heightmap]),),
-    scatterkwargs = (strokecolor = :white, strokewidth = 1),
-    heatarray = model -> penaltymap(model.pathfinder),
-    heatkwargs = (colormap = :grays,),
-    static_preplot!
-)
+    frames = 600,
+    title = "Evacuation Simulation",
+    showstep = true,
+    compression = 1,
+    profile = "high"
+    )
