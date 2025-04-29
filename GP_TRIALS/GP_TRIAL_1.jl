@@ -13,6 +13,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using DelimitedFiles
     using Observables
     using Makie
+    using CSV
 end                          
 
 @agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
@@ -298,7 +299,7 @@ begin
     # Figure & Axis
     fig = Figure(resolution = (800,800))
     ax  = Makie.Axis(fig[1,1];
-               title  = "Evacuation with Toxic Trails",
+               title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
     # Προαιρετικά heatmap και goals
@@ -333,7 +334,7 @@ begin
                           markersize = 10)
 
     # ———— 4) Το μοναδικό record loop ————
-    CairoMakie.record(fig, "EVAC_TOXIC_TRAILS_GP.mp4", 1:T) do _frame
+    CairoMakie.record(fig, "EVAC_TOXIC_TRAIL_$(seed).mp4", 1:T) do _frame
         # α) Κάνουμε ένα βήμα στο μοντέλο
         step!(model, agent_step!, model_step!, 1)
 
@@ -352,5 +353,25 @@ begin
         colobs[] = cols
     end
 
-    println("Το animation με trails και δυναμικό χρώμα σώθηκε ως EVAC_TOXIC_TRAILS_GP.mp4")
+    println("Το animation με trails και δυναμικό χρώμα σώθηκε ως EVAC_TOXIC_TRAIL_$(seed).mp4")
 end
+
+
+
+# ———— Εξαγωγή χαρακτηριστικών των agents σε CSV ————
+# Δημιουργούμε ένα DataFrame με τις στήλες id, age, mass
+df_agents = DataFrame(
+    id   = Int[],
+    age  = Float64[],
+    mass = Float64[]
+)
+
+# Γεμίζουμε το DataFrame με τα στοιχεία κάθε agent
+for a in allagents(model)
+    push!(df_agents, (a.id, a.age, a.mass))
+end
+
+# Γράφουμε το DataFrame σε CSV
+CSV.write("agent_characteristics_$(seed).csv", df_agents)
+
+println("Τα χαρακτηριστικά age & mass των agents αποθηκεύτηκαν στο agent_characteristics_$(seed).csv")
