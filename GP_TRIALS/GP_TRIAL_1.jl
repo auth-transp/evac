@@ -281,7 +281,7 @@ function static_preplot!(ax, abmplot)
 end
 
 
-function personcolor(person::AgentEscapes)
+function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλογα με το toxicload
     if person.toxicload >= 3.
         return :red
     elseif person.toxicload <= 1.
@@ -292,8 +292,7 @@ function personcolor(person::AgentEscapes)
 end
 
 
-begin
-    # ———— 1) Στήσιμο βασικών παραμέτρων ————
+begin   # Δημιουργία του animation με trails και χρώματα
     const T = 300
 
     # Figure & Axis
@@ -357,21 +356,21 @@ begin
 end
 
 
+begin   # ———— Εξαγωγή χαρακτηριστικών των agents σε CSV ————
+    # Δημιουργούμε ένα DataFrame με τις στήλες id, age, mass
+    df_agents = DataFrame(
+        id   = Int[],
+        age  = Float64[],
+        mass = Float64[]
+    )
 
-# ———— Εξαγωγή χαρακτηριστικών των agents σε CSV ————
-# Δημιουργούμε ένα DataFrame με τις στήλες id, age, mass
-df_agents = DataFrame(
-    id   = Int[],
-    age  = Float64[],
-    mass = Float64[]
-)
+    # Γεμίζουμε το DataFrame με τα στοιχεία κάθε agent
+    for a in allagents(model)
+        push!(df_agents, (a.id, a.age, a.mass))
+    end
 
-# Γεμίζουμε το DataFrame με τα στοιχεία κάθε agent
-for a in allagents(model)
-    push!(df_agents, (a.id, a.age, a.mass))
+    # Γράφουμε το DataFrame σε CSV
+    CSV.write("agent_characteristics_$(seed).csv", df_agents)
+
+    println("Τα χαρακτηριστικά age & mass των agents αποθηκεύτηκαν στο agent_characteristics_$(seed).csv")
 end
-
-# Γράφουμε το DataFrame σε CSV
-CSV.write("agent_characteristics_$(seed).csv", df_agents)
-
-println("Τα χαρακτηριστικά age & mass των agents αποθηκεύτηκαν στο agent_characteristics_$(seed).csv")
