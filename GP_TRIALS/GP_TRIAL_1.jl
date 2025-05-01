@@ -77,6 +77,45 @@ begin
     )
 end
 
+
+
+function agent_step!(person, model)
+    position = floor.(Int, person.pos)
+    Ct = concentrationmap[position[1], position[2]]
+    TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
+    TL = update_toxic_load(Ct, TLcurrent, dt)
+
+    person.toxicload = sum(TL)
+    push!(person.TL1, TL[1])
+    push!(person.TL2, TL[2])
+    push!(person.TL3, TL[3])
+
+    # --- Speed update based on toxicload ---
+    speed = 1.35
+    if 0 < person.toxicload <= 1
+        speed = 1.35 * exp(0.393 * person.toxicload)
+    elseif 1 < person.toxicload < 3
+        speed = -1.78 * log(person.toxicload) + 2.063
+    elseif person.toxicload >= 3
+        speed = 0.0
+    end
+
+    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
+
+    move_along_route!(person, model, model.pathfinder, speed, dt)
+    push!(person.pathX, person.pos[1])
+    push!(person.pathY, person.pos[2])
+end
+
+
+
+function model_step!(model)
+    for (a1, a2) in interacting_pairs(model, 0.012, :nearest)
+        elastic_collision!(a1, a2, :mass)
+    end
+end
+
+
 model = ABM(
   AgentEscapes,
   space;
@@ -218,44 +257,6 @@ function update_toxic_load(Ct, TLcurrent, dt)
 
     return TL
 end
- 
-
-
-function agent_step!(person, model)
-    position = floor.(Int, person.pos)
-    Ct = concentrationmap[position[1], position[2]]
-    TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
-
-    person.toxicload = sum(TL)
-    push!(person.TL1, TL[1])
-    push!(person.TL2, TL[2])
-    push!(person.TL3, TL[3])
-
-    # --- Speed update based on toxicload ---
-    speed = 1.35
-    if 0 < person.toxicload <= 1
-        speed = 1.35 * exp(0.393 * person.toxicload)
-    elseif 1 < person.toxicload < 3
-        speed = -1.78 * log(person.toxicload) + 2.063
-    elseif person.toxicload >= 3
-        speed = 0.0
-    end
-
-    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
-
-    move_along_route!(person, model, model.pathfinder, speed, dt)
-    push!(person.pathX, person.pos[1])
-    push!(person.pathY, person.pos[2])
-end
-
-
-
-function model_step!(model)
-    for (a1, a2) in interacting_pairs(model, 0.012, :nearest)
-        elastic_collision!(a1, a2, :mass)
-    end
-end
 
 
 
@@ -292,16 +293,15 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
 end
 
 
-begin   # Δημιουργία του animation με trails και χρώματα
+begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 300
 
-    # Figure & Axis
+    # -- Στήσιμο Figure & Axis --
     fig = Figure(resolution = (800,800))
     ax  = Makie.Axis(fig[1,1];
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
-    # Προαιρετικά heatmap και goals
     heatmap!(ax, penaltymap(model.pathfinder); colormap=:grays, alpha=0.3)
     goals = model.goal
     scatter!(ax,
@@ -311,66 +311,74 @@ begin   # Δημιουργία του animation με trails και χρώματ�
         marker = :o,
     )
 
-    # ———— 2) Δημιουργούμε τα observables για θέσεις & χρώματα ————
-    xs0 = [a.pos[1] for a in allagents(model)]
-    ys0 = [a.pos[2] for a in allagents(model)]
-    colors0 = [personcolor(a) for a in allagents(model)]
+    # -- Observables για θέση & χρώμα --
+
+    xs0 = Float64[]  # Initialize empty arrays for positions
+    ys0 = Float64[]
+    colors0 = Symbol[]  # Initialize empty array for colors
+
+    for a in allagents(model)
+        push!(xs0, a.pos[1])
+        push!(ys0, a.pos[2])
+        push!(colors0, personcolor(a))
+    end
 
     posobs = Observable(Point2f.(xs0, ys0))
     colobs = Observable(colors0)
 
-    # 3) Φτιάχνουμε τα αντικείμενα που θα ανανεώνουμε
     lines_plots = [
         lines!(ax,
-            [a.pos[1]], [a.pos[2]];
-            color     = personcolor(a),
-            linewidth = 2)
+               [a.pos[1]], [a.pos[2]];
+               color     = personcolor(a),
+               linewidth = 2)
         for a in allagents(model)
     ]
-
     agent_scat = scatter!(ax, posobs;
                           color      = colobs,
                           markersize = 10)
 
-    # ———— 4) Το μοναδικό record loop ————
-    CairoMakie.record(fig, "EVAC_TOXIC_TRAIL_$(seed).mp4", 1:T) do _frame
-        # α) Κάνουμε ένα βήμα στο μοντέλο
+    # -- Προετοιμασία DataFrame για θέση & toxicload ανά βήμα --
+    df = DataFrame(
+        step       = Int[],
+        agent_id   = Int[],
+        x          = Float64[],
+        y          = Float64[],
+        toxicload  = Float64[]
+    )
+
+    # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
+    video_file = "EVAC_TOXIC_TRAIL_$(seed).mp4"
+    record(fig, video_file, 1:T) do frame
+        # 1) βήμα προσομοίωσης
         step!(model, agent_step!, model_step!, 1)
 
-        # β) Ενημερώνουμε τα trails (lines) με το πλήρες history
+        # 2) ενημέρωση των trails
         for (i,a) in enumerate(allagents(model))
-            pts = Point2f.(a.pathX, a.pathY)
-            lines_plots[i][1][] = pts
+            lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
         end
 
-        # γ) Ενημερώνουμε positions & colors στο scatter
+        # 3) ενημέρωση θέσεων & δυναμικού χρώματος
         xs = [a.pos[1] for a in allagents(model)]
         ys = [a.pos[2] for a in allagents(model)]
         posobs[] = Point2f.(xs, ys)
+        colobs[] = [personcolor(a) for a in allagents(model)]
 
-        cols = [personcolor(a) for a in allagents(model)]
-        colobs[] = cols
+        # 4) συλλογή δεδομένων στο DataFrame
+        for a in allagents(model)
+            push!(df, (
+                frame,
+                a.id,
+                a.pos[1],
+                a.pos[2],
+                a.toxicload
+            ))
+        end
     end
 
-    println("Το animation με trails και δυναμικό χρώμα σώθηκε ως EVAC_TOXIC_TRAIL_$(seed).mp4")
-end
+    println("Το animation σώθηκε ως $video_file")
 
-
-begin   # ———— Εξαγωγή χαρακτηριστικών των agents σε CSV ————
-    # Δημιουργούμε ένα DataFrame με τις στήλες id, age, mass
-    df_agents = DataFrame(
-        id   = Int[],
-        age  = Float64[],
-        mass = Float64[]
-    )
-
-    # Γεμίζουμε το DataFrame με τα στοιχεία κάθε agent
-    for a in allagents(model)
-        push!(df_agents, (a.id, a.age, a.mass))
-    end
-
-    # Γράφουμε το DataFrame σε CSV
-    CSV.write("agent_characteristics_$(seed).csv", df_agents)
-
-    println("Τα χαρακτηριστικά age & mass των agents αποθηκεύτηκαν στο agent_characteristics_$(seed).csv")
+    # -- Εξαγωγή CSV με θέση & toxicload των agents --
+    csv_file = "agent_trajectories_$(seed).csv"
+    CSV.write(csv_file, df)
+    println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end
