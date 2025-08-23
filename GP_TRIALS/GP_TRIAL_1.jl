@@ -29,13 +29,94 @@ end
 end
 
 
-begin   # Φόρτωση του heightmap και του concentrationmap
-    heightmap_data = load("Maps/Qatargas Map.jpg")                                      # Load the heightmap data
-    heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]           # Permute the dimensions of the heightmap data
-    heightmap = floor.(Int, convert.(Float64, heightmap_data)*255)                      # Convert the heightmap data to a 2D array of integers
-    concentration_data = load("Maps/concentrationmap new.jpg")                          # Load the concentration data 
-    concentration_data = permutedims(channelview(concentration_data), [2,3,1])[:,:,1]   # Permute the dimensions of the concentration data
-    concentrationmap = floor.(Int, convert.(Float64, concentration_data .*500))         # Convert the concentration data to a 2D array of integers        # Convert the concentration data to a 2D array of integers
+begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
+
+    # --- heightmap όπως πριν ---
+    heightmap_data = load("Maps/Qatargas Map.jpg")
+    heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
+    global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
+
+    # --- Φόρτωση χειροποίητων penalty maps από GP_TRIALS\Penalty Map ---
+    penalty_dir = joinpath("GP_TRIALS", "Penalty Map")   # cross-platform safe path
+    penalty_files = sort(readdir(penalty_dir))
+    @assert !isempty(penalty_files) "Δεν βρέθηκαν penalty maps στον φάκελο $penalty_dir"
+
+    penalty_images = [load(joinpath(penalty_dir, f)) for f in penalty_files]
+
+    # Μετατροπή κάθε εικόνας σε matrix grayscale και ίδια κλίμακα όπως προηγουμένως (.*500)
+    global penalty_maps = [
+        begin
+            img = permutedims(channelview(pi), [2,3,1])[:,:,1]
+            floor.(Int, convert.(Float64, img .* 500))
+        end for pi in penalty_images
+    ]
+
+    # Έλεγχος ομοιότητας διαστάσεων με heightmap
+    for pm in penalty_maps
+        @assert size(pm) == size(heightmap) "Penalty map size does not match heightmap size"
+    end
+
+    global n_penalties = length(penalty_maps)
+    global current_penalty = 1
+    global global_penalty_map = deepcopy(penalty_maps[current_penalty])
+
+    # --- Helpers για αλλαγές χάρτη ---
+    function get_changed_nodes(oldmap::AbstractMatrix{<:Number}, newmap::AbstractMatrix{<:Number})
+        changed = Tuple{Int,Int}[]
+        @inbounds for i in axes(oldmap,1), j in axes(oldmap,2)
+            if oldmap[i,j] != newmap[i,j]
+                push!(changed, (i,j))
+            end
+        end
+        return changed
+    end
+
+    # χρονισμός: κάθε 120 s αλλάζει penalty map
+    global sim_time = 0.0
+    global penalty_interval = 120.0
+    global next_penalty_time = penalty_interval
+
+    # apply_penalty_index! : εφαρμόζει την penalty map με index idx
+    function apply_penalty_index!(model, idx::Integer)
+        @assert 1 <= idx <= n_penalties "Penalty index out of range"
+        global global_penalty_map
+
+        oldmap = deepcopy(global_penalty_map)
+        newmap = penalty_maps[idx]
+        global_penalty_map = deepcopy(newmap)
+
+        # Ενημέρωση pathfinder.penalty_map (αν υπάρχει ήδη model και pathfinder)
+        try
+            if isdefined(model, :properties) && haskey(model.properties, :pathfinder)
+                pf = model.properties[:pathfinder]
+                pf.cost_metric.penalty_map .= newmap
+            end
+        catch e
+            @warn "Δεν κατέστη δυνατό να ενημερωθεί το pathfinder.penalty_map: $e"
+        end
+
+        # (προαιρετικό) επιστρέφουμε τη λίστα με changed nodes για περαιτέρω χρήσεις
+        return get_changed_nodes(oldmap, newmap)
+    end
+
+    # maybe_update_penalty! : καλείται μέσα στο simulation loop με dt
+    function maybe_update_penalty!(model, dt)
+        global sim_time, next_penalty_time, current_penalty
+        sim_time += dt
+        if sim_time >= next_penalty_time
+            next_penalty_time += penalty_interval
+            current_penalty = (current_penalty % n_penalties) + 1
+            @info "Switching to penalty map $current_penalty at sim_time=$(sim_time)s"
+            changed = apply_penalty_index!(model, current_penalty)
+            # αν χρειαστεί, εδώ μπορείς να καλέσεις handle_cost_change! για D* lite με changed
+            return changed
+        end
+        return Tuple{Int,Int}[]
+    end
+
+    # ΣΗΜΕΙΩΣΗ: μετά τη δημιουργία του `model` κάλεσε μία φορά
+    #    apply_penalty_index!(model, current_penalty)
+    # ώστε ο pathfinder να είναι συγχρονισμένος με την αρχική penalty map.
 end
 
 
@@ -82,7 +163,8 @@ end
 
 function agent_step!(person, model)
     position = floor.(Int, person.pos)
-    Ct = concentrationmap[position[1], position[2]]
+   # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
+    Ct = global_penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, dt)
 
@@ -271,7 +353,7 @@ function static_preplot!(ax, abmplot)
     dests = model.goal
     xs_g = getindex.(dests, 1)
     ys_g = getindex.(dests, 2)
-    scatter!(ax, xs_g, ys_g; color = (:red, 50), marker = 'o')
+    scatter!(ax, xs_g, ys_g; color = (:red, 50), marker = '●')
 
     # 3) Σχεδιάζουμε για κάθε agent τη διαδρομή που έχει ήδη κάνει
     for agent in allagents(model)
@@ -295,7 +377,7 @@ end
 
 
 begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 300
+    const T = 1200
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(resolution = (800,800))
@@ -309,7 +391,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         getindex.(goals,1),
         getindex.(goals,2);
         color  = (:red,50),
-        marker = :o,
+        marker = :●,
     )
 
     # -- Observables για θέση & χρώμα --
@@ -349,8 +431,9 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
     video_file = "EVAC_TOXIC_TRAIL_$(seed).mp4"
-    record(fig, video_file, 1:T) do frame
+    record(fig, video_file, 1:T; framerate=30) do frame
         # 1) βήμα προσομοίωσης
+        maybe_update_penalty!(model, dt)
         step!(model, agent_step!, model_step!, 1)
 
         # 2) ενημέρωση των trails
