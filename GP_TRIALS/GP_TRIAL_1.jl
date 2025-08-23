@@ -16,6 +16,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using CSV
 end                          
 
+
 @agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
     age::Float64
     mass::Float64
