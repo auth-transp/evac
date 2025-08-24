@@ -31,12 +31,12 @@ end
 
 begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
 
-    # --- heightmap όπως πριν ---
+    # heightmap
     heightmap_data = load("Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
 
-    # --- Φόρτωση χειροποίητων penalty maps από GP_TRIALS\Penalty Map ---
+    # Φόρτωση penalty maps
     penalty_dir = joinpath("GP_TRIALS", "Penalty Map")   # cross-platform safe path
     penalty_files = sort(readdir(penalty_dir))
     @assert !isempty(penalty_files) "Δεν βρέθηκαν penalty maps στον φάκελο $penalty_dir"
@@ -108,7 +108,6 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
             current_penalty = (current_penalty % n_penalties) + 1
             @info "Switching to penalty map $current_penalty at sim_time=$(sim_time)s"
             changed = apply_penalty_index!(model, current_penalty)
-            # αν χρειαστεί, εδώ μπορείς να καλέσεις handle_cost_change! για D* lite με changed
             return changed
         end
         return Tuple{Int,Int}[]
@@ -207,6 +206,7 @@ model = ABM(
   agent_step!  = agent_step!,
   model_step!  = model_step!
 )
+apply_penalty_index!(model, current_penalty)
     
 for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
