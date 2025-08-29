@@ -311,7 +311,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         getindex.(goals,1),
         getindex.(goals,2);
         color  = (:red,50),
-        marker = :●,
+        marker = :circle,
     )
 
     # -- Observables για θέση & χρώμα --
@@ -350,7 +350,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO_1_$(seed).mp4"
+    video_file = "SCENARIO 1/Simulation Results/SCENARIO_1_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) βήμα προσομοίωσης
         step!(model, agent_step!, model_step!, 1)
@@ -381,7 +381,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO_1_$(seed).csv"
+    csv_file = "SCENARIO 1/Simulation Results/SCENARIO_1_$(seed).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end

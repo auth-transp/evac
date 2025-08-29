@@ -37,7 +37,7 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
 
     # Φόρτωση penalty maps
-    penalty_dir = joinpath("GP_TRIALS", "Penalty Map")   # cross-platform safe path
+    penalty_dir = joinpath("Penalty Map")   # cross-platform safe path
     penalty_files = sort(readdir(penalty_dir))
     @assert !isempty(penalty_files) "Δεν βρέθηκαν penalty maps στον φάκελο $penalty_dir"
 
@@ -86,17 +86,17 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
         global_penalty_map = deepcopy(newmap)
 
         # Ενημέρωση pathfinder.penalty_map (αν υπάρχει ήδη model και pathfinder)
-        try
-            if isdefined(model, :properties) && haskey(model.properties, :pathfinder)
-                pf = model.properties[:pathfinder]
-                pf.cost_metric.penalty_map .= newmap
-            end
-        catch e
-            @warn "Δεν κατέστη δυνατό να ενημερωθεί το pathfinder.penalty_map: $e"
-        end
+        #try
+        #    if isdefined(model, :properties) && haskey(model.properties, :pathfinder)
+        #        pf = model.properties[:pathfinder]
+        #        pf.cost_metric.penalty_map .= newmap
+        #    end
+        #catch e
+        #    @warn "Δεν κατέστη δυνατό να ενημερωθεί το pathfinder.penalty_map: $e"
+        #end
 
         # (προαιρετικό) επιστρέφουμε τη λίστα με changed nodes για περαιτέρω χρήσεις
-        return get_changed_nodes(oldmap, newmap)
+        #return get_changed_nodes(oldmap, newmap)
     end
 
     # maybe_update_penalty! : καλείται μέσα στο simulation loop με dt
@@ -113,9 +113,7 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
         return Tuple{Int,Int}[]
     end
 
-    # ΣΗΜΕΙΩΣΗ: μετά τη δημιουργία του `model` κάλεσε μία φορά
-    #    apply_penalty_index!(model, current_penalty)
-    # ώστε ο pathfinder να είναι συγχρονισμένος με την αρχική penalty map.
+    # ΣΗΜΕΙΩΣΗ: μετά τη δημιουργία του `model` κάλεσε μία φορά apply_penalty_index!(model, current_penalty) ώστε ο pathfinder να είναι συγχρονισμένος με την αρχική penalty map.
 end
 
 
@@ -391,7 +389,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         getindex.(goals,1),
         getindex.(goals,2);
         color  = (:red,50),
-        marker = :●,
+        marker = :circle,
     )
 
     # -- Observables για θέση & χρώμα --
@@ -430,7 +428,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "EVAC_TOXIC_TRAIL_$(seed).mp4"
+    video_file = "SCENARIO 2/Simulation Results/SCENARIO_2_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) βήμα προσομοίωσης
         maybe_update_penalty!(model, dt)
@@ -462,7 +460,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "agent_trajectories_$(seed).csv"
+    csv_file = "SCENARIO 2/Simulation Results/SCENARIO_2_$(seed).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end
