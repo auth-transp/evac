@@ -300,7 +300,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     const T = 1200
 
     # -- Στήσιμο Figure & Axis --
-    fig = Figure(resolution = (800,800))
+    fig = Figure(; size = (800,800))
     ax  = Makie.Axis(fig[1,1];
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
@@ -313,6 +313,18 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         color  = (:red,50),
         marker = :circle,
     )
+
+    # --- Overlay time counter ---
+    frame_obs = Observable(0)
+    
+    counter_lbl = Label(
+    fig,
+    @lift("Time elapsed = $((($frame_obs-1)*dt)) s"),
+    fontsize = 16,
+    padding = (6, 10, 6, 10),
+    halign = :left
+)
+    fig[1,1, TopLeft()] = counter_lbl  # αγκίστρωση πάνω-αριστερά στο ίδιο κελί με τον άξονα
 
     # -- Observables για θέση & χρώμα --
 
@@ -352,21 +364,24 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
     video_file = "SCENARIO 1/Simulation Results/SCENARIO_1_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
-        # 1) βήμα προσομοίωσης
+        # 1) ενημέρωση του frame counter
+        frame_obs[] = frame
+        # 2) βήμα προσομοίωσης
+        maybe_update_penalty!(model, dt)
         step!(model, agent_step!, model_step!, 1)
 
-        # 2) ενημέρωση των trails
+        # 3) ενημέρωση των trails
         for (i,a) in enumerate(allagents(model))
             lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
         end
 
-        # 3) ενημέρωση θέσεων & δυναμικού χρώματος
+        # 4) ενημέρωση θέσεων & δυναμικού χρώματος
         xs = [a.pos[1] for a in allagents(model)]
         ys = [a.pos[2] for a in allagents(model)]
         posobs[] = Point2f.(xs, ys)
         colobs[] = [personcolor(a) for a in allagents(model)]
 
-        # 4) συλλογή δεδομένων στο DataFrame
+        # 5) συλλογή δεδομένων στο DataFrame
         for a in allagents(model)
             push!(df, (
                 frame,

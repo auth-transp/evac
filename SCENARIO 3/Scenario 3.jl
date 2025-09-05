@@ -1,26 +1,48 @@
-begin
+begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
-    #using Agents.Pathfinding
-    using Random
-    using ColorTypes
-    using ImageMagick
-    using FileIO: load
-    using InteractiveDynamics
-    using Images
-    using DataFrames
+    using Random                        
+    using ColorTypes                      
+    using ImageMagick                 
+    using FileIO: load                     
+    using InteractiveDynamics             
+    using Images                    
+    using DataFrames           
     using Statistics
     using CairoMakie
     using DelimitedFiles
     using Observables
     using Makie
     using CSV
+    local_pf = joinpath(@__DIR__, "Pathfinding", "Pathfinding.jl")
+    @info "Including local Pathfinding module from: $local_pf"
+    include(local_pf)
+    import .Pathfinding                   # το module είναι Main.Pathfinding
+    const LocalPF = Pathfinding           # θα καλούμε LocalPF.xxx για ΟΛΑ
+end       
 
-    include("DStarLite.jl")
-    # import τις βασικές συναρτήσεις που θέλουμε (όχι όλες, μπορούμε να χρησιμοποιήσουμε και qualified calls)
-    using .DStarLiteModule: DStarLite, plan_best_route!, penaltymap, handle_map_changes!, compute_shortest_path!, get_next_step
+# ασφαλής helper για ανάκτηση του pathfinder από model
+function get_model_pathfinder(model)
+    # αν model δεν έχει properties πεδίο -> nothing
+    if !hasproperty(model, :properties)
+        return nothing
+    end
+    props = get(model, :properties, nothing)
+    if props === nothing
+        return nothing
+    end
+    # NamedTuple case
+    if isa(props, NamedTuple)
+        return get(props, :pathfinder, nothing)
+    end
+    # Dict-like case
+    if isa(props, AbstractDict)
+        return get(props, :pathfinder, nothing)
+    end
+    return nothing
 end
 
-@agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
+
+@agent struct AgentEscapes(ContinuousAgent{2, Float64})
     age::Float64
     mass::Float64
     toxicload::Float64
@@ -29,22 +51,25 @@ end
     TL1::Vector{Float64}
     TL2::Vector{Float64}
     TL3::Vector{Float64}
-    dstar::Any   # αποθηκεύουμε εδώ το per-agent D* instance (AgentDS)
+    dstar::Any   # αποθηκεύουμε εδώ το per-agent D* instance (AgentDS) ή nothing
 end
 
-# ---------------------- Load maps & penalty maps ----------------------
-begin
-    # heightmap (sat image)
+
+begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
+
+    # heightmap
     heightmap_data = load("Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
 
-    # penalty maps folder
-    penalty_dir = joinpath("Penalty Map")
+    # Φόρτωση penalty maps
+    penalty_dir = joinpath("Penalty Map")   # cross-platform safe path
     penalty_files = sort(readdir(penalty_dir))
     @assert !isempty(penalty_files) "Δεν βρέθηκαν penalty maps στον φάκελο $penalty_dir"
+
     penalty_images = [load(joinpath(penalty_dir, f)) for f in penalty_files]
 
+    # Μετατροπή κάθε εικόνας σε matrix grayscale και ίδια κλίμακα όπως προηγουμένως (.*500)
     global penalty_maps = [
         begin
             img = permutedims(channelview(pi), [2,3,1])[:,:,1]
@@ -52,6 +77,7 @@ begin
         end for pi in penalty_images
     ]
 
+    # Έλεγχος ομοιότητας διαστάσεων με heightmap
     for pm in penalty_maps
         @assert size(pm) == size(heightmap) "Penalty map size does not match heightmap size"
     end
@@ -60,9 +86,7 @@ begin
     global current_penalty = 1
     global global_penalty_map = deepcopy(penalty_maps[current_penalty])
 
-    # obstacle threshold: πάνω από αυτό θεωρούμε "μπλοκ/ανηχόρ"
-    global obstacle_threshold = 250
-
+    # --- Helpers για αλλαγές χάρτη ---
     function get_changed_nodes(oldmap::AbstractMatrix{<:Number}, newmap::AbstractMatrix{<:Number})
         changed = Tuple{Int,Int}[]
         @inbounds for i in axes(oldmap,1), j in axes(oldmap,2)
@@ -73,130 +97,64 @@ begin
         return changed
     end
 
-    function apply_penalty_index!(model, idx::Integer)
-        @assert 1 <= idx <= n_penalties "Penalty index out of range"
-        global global_penalty_map
-
-        oldmap = deepcopy(global_penalty_map)
-        newmap = penalty_maps[idx]
-        global_penalty_map = deepcopy(newmap)
-
-        # Πάρε properties με ασφαλή τρόπο (παρακάμπτουμε πιθανό Agents.getproperty override)
-        props = try
-            getfield(model, :properties)
-        catch _e
-            nothing
-        end
-
-        # Αποφάσισε obstacle_threshold — αν υπάρχει στα properties το παίρνουμε, αλλιώς default 250
-        obstacle_threshold = 250
-        if props !== nothing
-            if isa(props, NamedTuple)
-                if (:obstacle_threshold in propertynames(props))
-                    obstacle_threshold = props.obstacle_threshold
-                end
-            elseif isa(props, Dict)
-                obstacle_threshold = get(props, :obstacle_threshold, obstacle_threshold)
-            end
-        end
-
-        # compute binary walkmaps (true = walkable)
-        old_walkmap = oldmap .< obstacle_threshold
-        new_walkmap = newmap .< obstacle_threshold
-
-        # changed cells where walkability toggled
-        changed_cells = [(i,j) for i in axes(old_walkmap,1), j in axes(old_walkmap,2) if old_walkmap[i,j] != new_walkmap[i,j]]
-
-        # produce a simple 'vc' structure that handle_map_changes! accepts
-        vc = [(cell, nothing) for cell in changed_cells]
-
-        # Προσπάθησε να βρεις top-level pathfinder (pf) από props με ασφαλή τρόπο
-        pf = nothing
-        if props !== nothing
-            if isa(props, NamedTuple)
-                pf = get(props, :pathfinder, nothing)
-            elseif isa(props, Dict)
-                pf = get(props, :pathfinder, nothing)
-            end
-        end
-
-        # ενημέρωση κάθε agent που έχει dstar
-        for a in allagents(model)
-            if hasfield(a, :dstar) && a.dstar !== nothing
-                try
-                    # ενημέρωσε sensed_walkmap
-                    a.dstar.sensed_walkmap .= new_walkmap
-
-                    # ενημέρωσε incremental map-changes (module function)
-                    try
-                        DStarLiteModule.handle_map_changes!(a.dstar, vc)
-                    catch e_handle
-                        @warn "handle_map_changes! απέτυχε για agent $(a.id): $e_handle"
-                    end
-
-                    # επανυπολόγισε shortest path (μινιμαλιστική συνάρτηση του module)
-                    try
-                        DStarLiteModule.compute_shortest_path!(a.dstar)
-                    catch e_compute
-                        @warn "compute_shortest_path! απέτυχε για agent $(a.id): $e_compute"
-                    end
-
-                    # ενημέρωσε την αντιστοιχία στον top-level pathfinder (αν υπάρχει)
-                    if pf !== nothing
-                        try
-                            # Κατασκευάζουμε νέο path από το ds και το γράφουμε στο pf
-                            newpath = try
-                                DStarLiteModule.build_path_from_ds(a.dstar)
-                            catch e_bp
-                                @warn "build_path_from_ds απέτυχε για agent $(a.id): $e_bp"
-                                nothing
-                            end
-
-                            if newpath !== nothing
-                                pf.agent_paths[a.id] = newpath
-                            else
-                                # fallback: κάνουμε πλήρη replanning μέσω της exposed helper plan_best_route! (αν υπάρχει)
-                                try
-                                    DStarLiteModule.plan_best_route!(a, getfield(model, :goal), pf)
-                                catch e_plan
-                                    @warn "Fallback plan_best_route! απέτυχε για agent $(a.id): $e_plan"
-                                end
-                            end
-                        catch e
-                            @warn "Σφάλμα κατά την ενημέρωση pf.agent_paths για agent $(a.id): $e"
-                        end
-                    end
-                catch e
-                    @warn "Σφάλμα ενημέρωσης D* για agent $(a.id): $e"
-                end
-            end
-        end
-
-        # Ενημέρωση pf.cost_metric.penalty_map (αν υπάρχει)
-        if pf !== nothing
-            try
-                if hasproperty(pf, :cost_metric) && pf.cost_metric !== nothing
-                    # προτίμηση σε πεδίο penalty_map, fallback σε pmap
-                    if hasproperty(pf.cost_metric, :penalty_map)
-                        pf.cost_metric.penalty_map .= newmap
-                    elseif hasproperty(pf.cost_metric, :pmap)
-                        pf.cost_metric.pmap .= newmap
-                    else
-                        # αν cost_metric δεν έχει αυτά τα πεδία, προσπάθησε να βάλεις νέο πεδίο (προαιρετικά)
-                        @debug "cost_metric δεν έχει πεδίο penalty_map ή pmap — δεν ενημερώθηκε"
-                    end
-                end
-            catch e
-                @warn "Δεν κατέστη δυνατό να ενημερωθεί το pathfinder.cost_metric.penalty_map: $e"
-            end
-        end
-        return changed_cells
-    end
-
+    # χρονισμός: κάθε 120 s αλλάζει penalty map
     global sim_time = 0.0
     global penalty_interval = 120.0
     global next_penalty_time = penalty_interval
 
+    # apply_penalty_index! : εφαρμόζει την penalty map με index idx
+    function apply_penalty_index!(model, idx::Integer)
+    @assert 1 <= idx <= n_penalties
+    global global_penalty_map
+
+    oldmap = deepcopy(global_penalty_map)
+    newmap = penalty_maps[idx]
+    global_penalty_map = deepcopy(newmap)
+
+    obstacle_threshold = 2000   # ή ό,τι χρησιμοποιείς
+    old_walkmap = oldmap .< obstacle_threshold
+    new_walkmap = newmap .< obstacle_threshold
+
+    # changed cells
+    changed_cells = [(i,j) for i in axes(old_walkmap,1), j in axes(old_walkmap,2) if old_walkmap[i,j] != new_walkmap[i,j]]
+    vc = [(cell, nothing) for cell in changed_cells]
+
+    # ενημέρωση κάθε agent που έχει dstar
+    for a in allagents(model)
+        if hasfield(a, :dstar) && a.dstar !== nothing
+            try
+                a.dstar.sensed_walkmap .= new_walkmap
+                # replan / incremental update (LocalPF helpers)
+                LocalPF.handle_map_changes!(a.dstar, vc)
+                LocalPF.compute_shortest_path!(a.dstar)
+
+                # ενημέρωσε path στον top-level pathfinder αν υπάρχει
+                pf = get_model_pathfinder(model)
+                if pf !== nothing
+                    pf.agent_paths[a.id] = LocalPF.build_path_from_ds(a.dstar)
+                end
+            catch e
+                @warn "Couldn't update agent dstar: $e"
+            end
+        end
+    end
+
+    # --- ενημέρωση στην cost_metric / penalty map αν υπάρχει στο top-level pathfinder ---
+    pf = get_model_pathfinder(model)
+    if pf !== nothing && pf.cost_metric !== nothing
+        if hasproperty(pf.cost_metric, :penalty_map)
+            pf.cost_metric.penalty_map .= newmap
+        elseif hasproperty(pf.cost_metric, :pmap)
+            pf.cost_metric.pmap .= newmap
+        else
+            @warn "pf.cost_metric has no penalty_map/pmap field."
+        end
+    end
+
+    return changed_cells
+end
+
+    # maybe_update_penalty! : καλείται μέσα στο simulation loop με dt
     function maybe_update_penalty!(model, dt)
         global sim_time, next_penalty_time, current_penalty
         sim_time += dt
@@ -209,33 +167,43 @@ begin
         end
         return Tuple{Int,Int}[]
     end
+
+    # ΣΗΜΕΙΩΣΗ: μετά τη δημιουργία του `model` κάλεσε μία φορά apply_penalty_index!(model, current_penalty) ώστε ο pathfinder να είναι συγχρονισμένος με την αρχική penalty map.
 end
 
-# ------------------- Model parameters -------------------
-begin
-    dt = 1.0
-    seed = 123
-    n_agents = 3
-    toxicity_rate = 0.07
-    age_range = (22,60)
-    speed_range = (4.0,7.0)
-    speed = 5.0
-    mass_range = (50,80)
-    ag_range_y = (size(heightmap)[1]÷2-50):(size(heightmap)[1]÷2+50)
-    ag_range_x = (size(heightmap)[2]÷2-50):(size(heightmap)[2]÷2+50)
-    MW = 34
-    dims = (size(heightmap))
-    walkmap = BitArray(trues(dims...))
-end
 
-dests = [(600., 980.), (100., 200.)]
-rng = MersenneTwister(seed)
-space = ContinuousSpace(size(heightmap); periodic=false, spacing=1)
+begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+    dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
+    seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    n_agents = 3                                                        # Define the n_agents variable as 3
+    toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
+    age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
+    speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
+    speed = 5.                                                         # Define the speed variable as 5 
+    mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
+    ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)    # Define the ag_range_y variable as a range of values from the heightmap array # [1] stands for the 1st row
+    ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
+    MW = 34 #Molecular weight of H2S in g/mol
+    dims = (size(heightmap))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
+end    
 
-# ------------------- Create top-level DStarLite pathfinder (grid dims) -------------------
+
+    #goals
+    dests = [(600., 980.), (100., 200.)]
+
+    #Generate the RNG for the model
+    rng = MersenneTwister(seed)
+
+    ## Note that the dimensions of the space do not have to correspond to the dimensions
+    ## of the pathfinder. Discretisation is handled by the pathfinding methods
+    space = ContinuousSpace(size(heightmap); periodic = false, spacing = 1)
+
+
 begin
-    # create DStarLite using dims (rows,cols) — όχι ContinuousSpace
-    pathfinder = DStarLite((size(heightmap,1), size(heightmap,2)); walkmap=walkmap, cost_metric=PenaltyMap(heightmap, MaxDistance{2}()))
+    pathfinder = LocalPF.DStarLite(size(heightmap);
+    walkmap = walkmap,
+    cost_metric = LocalPF.PenaltyMap(heightmap, LocalPF.MaxDistance{2}()))    
     properties = (
         pathfinder = pathfinder,
         heightmap = heightmap,
@@ -245,54 +213,11 @@ begin
     )
 end
 
-# ------------------- helper: move using dstar if present -------------------
-function dstar_move_one_step!(person::AgentEscapes, model, speed::Real, dt::Real)
-    # if no dstar, fallback to existing move_along_route!
-    if person.dstar === nothing
-        move_along_route!(person, model, model.properties[:pathfinder], speed, dt)
-        return
-    end
 
-    ds = person.dstar
-    # sync ds.s_start with agent current grid cell
-    # IMPORTANT: module uses tuple (row, col) indexing; we map continuous pos (x,y) -> (row=Int(y), col=Int(x))
-    cur_row = clamp(floor(Int, person.pos[2]), 1, ds.rows)
-    cur_col = clamp(floor(Int, person.pos[1]), 1, ds.cols)
-    ds.s_start = (cur_row, cur_col)
 
-    # ask ds for next cell (returns (row,col))
-    nextcell = DStarLiteModule.get_next_step(ds)
-    if nextcell === nothing
-        return
-    end
-
-    # convert nextcell (row,col) -> target (x,y) continuous coords
-    target_x = Float64(nextcell[2])
-    target_y = Float64(nextcell[1])
-
-    dx = target_x - person.pos[1]
-    dy = target_y - person.pos[2]
-    dist = sqrt(dx^2 + dy^2)
-    if dist == 0.0
-        # we reached center of next cell: update s_start
-        ds.s_start = nextcell
-        return
-    end
-
-    maxstep = speed * dt
-    if dist <= maxstep
-        # step to center and mark start as the next cell
-        person.pos = (target_x, target_y)
-        ds.s_start = nextcell
-    else
-        # partial step
-        person.pos = (person.pos[1] + dx / dist * maxstep, person.pos[2] + dy / dist * maxstep)
-    end
-end
-
-# ------------------- agent_step! (uses dstar_move_one_step!) -------------------
 function agent_step!(person, model)
     position = floor.(Int, person.pos)
+   # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
     Ct = global_penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, dt)
@@ -303,32 +228,31 @@ function agent_step!(person, model)
     push!(person.TL3, TL[3])
 
     # --- Speed update based on toxicload ---
-    spd = 1.35
+    speed = 1.35
     if 0 < person.toxicload <= 1
-        spd = 1.35 * exp(0.393 * person.toxicload)
+        speed = 1.35 * exp(0.393 * person.toxicload)
     elseif 1 < person.toxicload < 3
-        spd = -1.78 * log(person.toxicload) + 2.063
+        speed = -1.78 * log(person.toxicload) + 2.063
     elseif person.toxicload >= 3
-        spd = 0.0
+        speed = 0.0
     end
 
-    display("Speed: $spd  -  ToxicLoad: $(person.toxicload)")
+    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    # move using per-agent D*
-    dstar_move_one_step!(person, model, spd, dt)
-
+    LocalPF.move_along_route!(person, model, model.properties.pathfinder, speed, dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
 
-# model_step! as before
+
+
 function model_step!(model)
     for (a1, a2) in interacting_pairs(model, 0.012, :nearest)
         elastic_collision!(a1, a2, :mass)
     end
 end
 
-# create model
+
 model = ABM(
   AgentEscapes,
   space;
@@ -337,72 +261,33 @@ model = ABM(
   agent_step!  = agent_step!,
   model_step!  = model_step!
 )
-
-
-
-# ensure initial penalty map applied
 apply_penalty_index!(model, current_penalty)
-
-
-# Πάρε raw properties και pathfinder μία φορά
-_props = getfield(model, :properties)           # παρακάμπτει Agents.getproperty
-pf = isa(_props, NamedTuple) ? _props.pathfinder : (isa(_props, Dict) ? get(_props, :pathfinder, nothing) : nothing)
-
-if pf === nothing
-    @warn "Δεν βρέθηκε pathfinder στα model.properties"
-end
-
-
-# create agents and call plan_best_route! (which will attach AgentDS -> agent.dstar)
+    
 for _ in 1:n_agents
     # sample properties
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
-
-    # generate integer grid indices but convert to Float64 to match ContinuousAgent{Float64}
+    # generate integer grid indices then convert to Float64 for ContinuousAgent positions
     y_i = rand(abmrng(model), floor.(ag_range_y))
     x_i = rand(abmrng(model), floor.(ag_range_x))
-    pos = (Float64(y_i), Float64(x_i))   # (y,x) όπως έχεις συνηθίσει
+    pos = (Float64(y_i), Float64(x_i))
 
-    # 1) Δημιούργησε τον agent: model πρώτο, μετά τύπος, μετά pos
-    person = add_agent!(model, AgentEscapes, pos)
+    # Create agent with standard add_agent! signature, passing important args as keywords
+    person = add_agent!(model, AgentEscapes, pos; 
+                        vel = vel,
+                        age = age,
+                        mass = mass,
+                        toxicload = 1.0,
+                        pathX = [pos[1]],
+                        pathY = [pos[2]],
+                        TL1 = [0.0],
+                        TL2 = [0.0],
+                        TL3 = [0.0],
+                        dstar = nothing)
 
-    # 2) Θέσε τα υπόλοιπα πεδία ρητά (safer από μεγάλα positional args)
-    # - vel είναι πεδίο του ContinuousAgent supertype -> το θέτεις απευθείας
-    person.vel = vel
-    person.age = age
-    person.mass = mass
-    person.toxicload = 1.0
-    person.pathX = [pos[1]]
-    person.pathY = [pos[2]]
-    person.TL1 = [0.0]
-    person.TL2 = [0.0]
-    person.TL3 = [0.0]
-    person.dstar = nothing
-
-    # 3) Πάρε pathfinder από model.properties με ασφάλεια
-    pf = nothing
-    props = try
-        getfield(model, :properties)
-    catch
-        nothing
-    end
-
-    if props !== nothing
-        if isa(props, NamedTuple) || isa(props, Base.Something) # safe check
-            pf = get(props, :pathfinder, nothing)
-        elseif isa(props, Dict)
-            pf = get(props, :pathfinder, nothing)
-        end
-    end
-
-    if pf === nothing
-        @warn "Αποφεύγω υπολογισμό διαδρομής για agent $(person.id): δεν βρέθηκε pathfinder"
-    else
-        # καλούμε τη συνάρτηση του D* module που φτιάχνει το AgentDS και βάζει path
-        plan_best_route!(person, dests, pf)
-    end
+    # Plan route using the pathfinder attached to model
+    LocalPF.plan_best_route!(person, dests, model.properties.pathfinder)
 end
 
 
@@ -568,7 +453,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     const T = 1200
 
     # -- Στήσιμο Figure & Axis --
-    fig = Figure(resolution = (800,800))
+    fig = Figure(; size = (800,800))
     ax  = Makie.Axis(fig[1,1];
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
@@ -581,6 +466,18 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         color  = (:red,50),
         marker = :circle,
     )
+
+    # --- Overlay time counter ---
+    frame_obs = Observable(0)
+    
+    counter_lbl = Label(
+    fig,
+    @lift("Time elapsed = $((($frame_obs-1)*dt)) s"),
+    fontsize = 16,
+    padding = (6, 10, 6, 10),
+    halign = :left
+)
+    fig[1,1, TopLeft()] = counter_lbl  # αγκίστρωση πάνω-αριστερά στο ίδιο κελί με τον άξονα
 
     # -- Observables για θέση & χρώμα --
 
@@ -620,22 +517,24 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
     video_file = "SCENARIO 3/Simulation Results/SCENARIO_3_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
-        # 1) βήμα προσομοίωσης
+        # 1) ενημέρωση του frame counter
+        frame_obs[] = frame
+        # 2) βήμα προσομοίωσης
         maybe_update_penalty!(model, dt)
         step!(model, agent_step!, model_step!, 1)
 
-        # 2) ενημέρωση των trails
+        # 3) ενημέρωση των trails
         for (i,a) in enumerate(allagents(model))
             lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
         end
 
-        # 3) ενημέρωση θέσεων & δυναμικού χρώματος
+        # 4) ενημέρωση θέσεων & δυναμικού χρώματος
         xs = [a.pos[1] for a in allagents(model)]
         ys = [a.pos[2] for a in allagents(model)]
         posobs[] = Point2f.(xs, ys)
         colobs[] = [personcolor(a) for a in allagents(model)]
 
-        # 4) συλλογή δεδομένων στο DataFrame
+        # 5) συλλογή δεδομένων στο DataFrame
         for a in allagents(model)
             push!(df, (
                 frame,
