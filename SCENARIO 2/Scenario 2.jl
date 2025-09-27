@@ -37,90 +37,17 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
 
     # Φόρτωση penalty maps
-    penalty_dir = joinpath("Penalty Map")   # cross-platform safe path
-    penalty_files = sort(readdir(penalty_dir))
-    @assert !isempty(penalty_files) "Δεν βρέθηκαν penalty maps στον φάκελο $penalty_dir"
-
-    penalty_images = [load(joinpath(penalty_dir, f)) for f in penalty_files]
-
-    # Μετατροπή κάθε εικόνας σε matrix grayscale και ίδια κλίμακα όπως προηγουμένως (.*500)
-    global penalty_maps = [
-        begin
-            img = permutedims(channelview(pi), [2,3,1])[:,:,1]
-            floor.(Int, convert.(Float64, img .* 500))
-        end for pi in penalty_images
-    ]
-
-    # Έλεγχος ομοιότητας διαστάσεων με heightmap
-    for pm in penalty_maps
-        @assert size(pm) == size(heightmap) "Penalty map size does not match heightmap size"
-    end
-
-    global n_penalties = length(penalty_maps)
-    global current_penalty = 1
-    global global_penalty_map = deepcopy(penalty_maps[current_penalty])
-
-    # --- Helpers για αλλαγές χάρτη ---
-    function get_changed_nodes(oldmap::AbstractMatrix{<:Number}, newmap::AbstractMatrix{<:Number})
-        changed = Tuple{Int,Int}[]
-        @inbounds for i in axes(oldmap,1), j in axes(oldmap,2)
-            if oldmap[i,j] != newmap[i,j]
-                push!(changed, (i,j))
-            end
-        end
-        return changed
-    end
-
-    # χρονισμός: κάθε 120 s αλλάζει penalty map
-    global sim_time = 0.0
-    global penalty_interval = 120.0
-    global next_penalty_time = penalty_interval
-
-    # apply_penalty_index! : εφαρμόζει την penalty map με index idx
-    function apply_penalty_index!(model, idx::Integer)
-        @assert 1 <= idx <= n_penalties "Penalty index out of range"
-        global global_penalty_map
-
-        oldmap = deepcopy(global_penalty_map)
-        newmap = penalty_maps[idx]
-        global_penalty_map = deepcopy(newmap)
-
-        # Ενημέρωση pathfinder.penalty_map (αν υπάρχει ήδη model και pathfinder)
-        #try
-        #    if isdefined(model, :properties) && haskey(model.properties, :pathfinder)
-        #        pf = model.properties[:pathfinder]
-        #        pf.cost_metric.penalty_map .= newmap
-        #    end
-        #catch e
-        #    @warn "Δεν κατέστη δυνατό να ενημερωθεί το pathfinder.penalty_map: $e"
-        #end
-
-        # (προαιρετικό) επιστρέφουμε τη λίστα με changed nodes για περαιτέρω χρήσεις
-        #return get_changed_nodes(oldmap, newmap)
-    end
-
-    # maybe_update_penalty! : καλείται μέσα στο simulation loop με dt
-    function maybe_update_penalty!(model, dt)
-        global sim_time, next_penalty_time, current_penalty
-        sim_time += dt
-        if sim_time >= next_penalty_time
-            next_penalty_time += penalty_interval
-            current_penalty = (current_penalty % n_penalties) + 1
-            @info "Switching to penalty map $current_penalty at sim_time=$(sim_time)s"
-            changed = apply_penalty_index!(model, current_penalty)
-            return changed
-        end
-        return Tuple{Int,Int}[]
-    end
-
-    # ΣΗΜΕΙΩΣΗ: μετά τη δημιουργία του `model` κάλεσε μία φορά apply_penalty_index!(model, current_penalty) ώστε ο pathfinder να είναι συγχρονισμένος με την αρχική penalty map.
+    penalty_map = load("Penalty Map/6.bmp")
+    penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
+    global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
 end
 
+NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 3                                                        # Define the n_agents variable as 3
+    n_agents = 100                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -129,7 +56,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)    # Define the ag_range_y variable as a range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
     MW = 34 #Molecular weight of H2S in g/mol
-    dims = (size(heightmap))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
 end    
 
@@ -142,11 +69,11 @@ end
 
     ## Note that the dimensions of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
-    space = ContinuousSpace(size(heightmap); periodic = false, spacing = 1)
+    space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
 
 begin
-    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(heightmap, MaxDistance{2}()))
+    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
     properties = (
         pathfinder = pathfinder,
         heightmap = heightmap,
@@ -161,7 +88,7 @@ end
 function agent_step!(person, model)
     position = floor.(Int, person.pos)
    # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
-    Ct = global_penalty_map[position[1], position[2]]
+    Ct = penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, dt)
 
@@ -204,8 +131,8 @@ model = ABM(
   agent_step!  = agent_step!,
   model_step!  = model_step!
 )
-apply_penalty_index!(model, current_penalty)
-    
+
+
 for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
@@ -375,7 +302,7 @@ end
 
 
 begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 1200
+    const T = 400
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
@@ -383,7 +310,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
-    heatmap!(ax, penaltymap(model.pathfinder); colormap=:grays, alpha=0.3)
+    heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),
@@ -445,7 +372,6 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
         # 2) βήμα προσομοίωσης
-        maybe_update_penalty!(model, dt)
         step!(model, agent_step!, model_step!, 1)
 
         # 3) ενημέρωση των trails

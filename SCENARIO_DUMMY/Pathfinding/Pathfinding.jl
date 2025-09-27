@@ -29,9 +29,9 @@ abstract type GridPathfinder{D,P,M} end
 
 include("metrics.jl")
 include("pathfinding_utils.jl")
-include("Dlite.jl")
-include("Dlite_grid.jl")
-include("Dlite_continuous.jl")
+include("dlite.jl")
+include("dlite_grid.jl")
+include("dlite_continuous.jl")
 
 export CostMetric,
     DirectDistance,
@@ -42,6 +42,10 @@ export CostMetric,
     penaltymap,
     nearby_walkable,
     random_walkable
+    dl_initialize!,   # Initialize()
+    dl_compute_shortest_path!,  # ComputeShortestPath()
+    dl_update_vertex!,          # UpdateVertex(u)
+    dl_move_and_replan!         # Main loop util (προαιρετικό)
 
 # Deprecations
 @deprecate set_target! plan_route!

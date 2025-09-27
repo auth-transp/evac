@@ -1,4 +1,4 @@
-export Pathfinding
+export Pathfinding  # Πώς καλείται το αρχείο στο main
 
 """
     Pathfinding
@@ -19,7 +19,7 @@ Refer to the [Maze Solver](https://juliadynamics.github.io/AgentsExampleZoo.jl/d
 and [Rabbit, Fox, Hawk](https://juliadynamics.github.io/Agents.jl/stable/examples/rabbit_fox_hawk/)
 examples using path-finding and see the available functions below as well.
 """
-module Pathfinding
+module Pathfinding  #Αρχικοποίηση του module
 
 using Agents
 using DataStructures
@@ -33,17 +33,15 @@ include("astar.jl")
 include("astar_grid.jl")
 include("astar_continuous.jl")
 
-export CostMetric,
+export CostMetric,  #Συναρτήσεις που εξάγονται εύκολα από το module
     DirectDistance,
     MaxDistance,
     PenaltyMap,
     AStar,
-    DStarLite,
     delta_cost,
     penaltymap,
     nearby_walkable,
     random_walkable
-
 
 # Deprecations
 @deprecate set_target! plan_route!

@@ -1,11 +1,30 @@
-"""
-    Path{D,T}
-Alias of `MutableLinkedList{NTuple{D,T}}`. Used to represent the path to be
-taken by an agent in a `D` dimensional space.
-"""
+using DataStructures
+using DataStructures: PriorityQueue, enqueue!, dequeue!, peek, haskey, delete!
+using Agents
+using LinearAlgebra
+
+# ---------------------------
+# D*-Lite style implementation, kept as Dlite name (replace earlier Dlite)
+# Requires: using DataStructures
+# ---------------------------
+
+# Path alias already defined earlier in your module:
 const Path{D,T} = MutableLinkedList{NTuple{D,T}}
 
-struct Dlite{D,P,M,T,C<:CostMetric{D}} <: GridPathfinder{D,P,M}
+
+moore_neighborhood(D) = [
+    CartesianIndex(a)
+    for a in Iterators.product([-1:1 for _ in 1:D]...)
+    if a != ntuple(_->0, D)
+]
+
+function vonneumann_neighborhood(D)
+    hypercube = CartesianIndices((repeat([-1:1], D)...,))
+    [β for β in hypercube if LinearAlgebra.norm(β.I) == 1]
+end
+
+
+mutable struct Dlite{D,P,M,T,C<:CostMetric{D}} <: GridPathfinder{D,P,M}
     agent_paths::Dict{Int,Path{D,T}}
     dims::NTuple{D,T}
     neighborhood::Vector{CartesianIndex{D}}
@@ -13,55 +32,40 @@ struct Dlite{D,P,M,T,C<:CostMetric{D}} <: GridPathfinder{D,P,M}
     walkmap::BitArray{D}
     cost_metric::C
 
+    # --- D* Lite state ---
+    g::Dict{NTuple{D,Int},Float64}
+    rhs::Dict{NTuple{D,Int},Float64}
+    km::Float64
+    open::PriorityQueue{NTuple{D,Int},Tuple{Float64,Float64}}  # (k1,k2)
+    lookup::Dict{NTuple{D,Int},Tuple{Float64,Float64}}         # mirror of priorities
+
+    # book-keeping για main loop
+    last_start::Union{Nothing,NTuple{D,Int}}
+    last_goal::Union{Nothing,NTuple{D,Int}}
+
     function Dlite{D,P,M,T,C}(
-        agent_paths::Dict,
+        agent_paths::Dict{Int,Path{D,T}},
         dims::NTuple{D,T},
         neighborhood::Vector{CartesianIndex{D}},
         admissibility::Float64,
         walkmap::BitArray{D},
         cost_metric::C,
-    ) where {D,P,M,C,T}
-        @assert all(dims .> 0) "Invalid pathfinder dimensions: $(dims)"
-        T <: Integer && @assert size(walkmap) == dims "Walkmap must be same dimensions as grid"
-        @assert admissibility >= 0 "Invalid value for admissibility: $admissibility ≱ 0"
-        if cost_metric isa PenaltyMap{D}
-            @assert size(cost_metric.pmap) == size(walkmap) "Penaltymap dimensions must be same as walkable map"
-        elseif cost_metric isa DirectDistance{D}
-            if M
-                @assert length(cost_metric.direction_costs) >= D "DirectDistance direction_costs must have as many values as dimensions"
-            else
-                @assert length(cost_metric.direction_costs) >= 1 "DirectDistance direction_costs must have non-zero length"
-            end
-        end
-        new(agent_paths, dims, neighborhood, admissibility, walkmap, cost_metric)
+    ) where {D,P,M,T,C}
+        @assert all(dims .> 0)
+        T <: Integer && @assert size(walkmap) == dims
+        new(
+            agent_paths, dims, neighborhood, admissibility, walkmap, cost_metric,
+            Dict{NTuple{D,Int},Float64}(),
+            Dict{NTuple{D,Int},Float64}(),
+            0.0,
+            PriorityQueue{NTuple{D,Int},Tuple{Float64,Float64}}(),
+            Dict{NTuple{D,Int},Tuple{Float64,Float64}}(),
+            nothing, nothing
+        )
     end
 end
 
-"""
-    Pathfinding.Dlite(space; kwargs...)
-Enables pathfinding for agents in the provided `space` (which can be a [`GridSpace`](@ref) or
-[`ContinuousSpace`](@ref)) using the A* algorithm. This struct must be passed into any
-pathfinding functions.
-
-For [`ContinuousSpace`](@ref), a walkmap or instance of [`PenaltyMap`](@ref) must be provided
-to specify the level of discretisation of the space.
-
-## Keywords
-- `diagonal_movement = true` specifies if movement can be to diagonal neighbors of a
-  tile, or only orthogonal neighbors. Only available for [`GridSpace`](@ref)
-- `admissibility = 0.0` allows the algorithm to approximate paths to speed up pathfinding.
-  A value of `admissibility` allows paths with at most `(1+admissibility)` times the optimal
-  length.
-- `walkmap = trues(spacesize(space))` specifies the (un)walkable positions of the
-  space. If specified, it should be a `BitArray` of the same size as the corresponding
-  `GridSpace`. By default, agents can walk anywhere in the space.
-- `cost_metric = DirectDistance{D}()` is an instance of a cost metric and specifies the
-  metric used to approximate the distance between any two points.
-
-Utilization of all features of `Dlite` occurs in the
-[3D Mixed-Agent Ecosystem with Pathfinding](@id rabbit_fox_hawk)
-example.
-"""
+# ---------- Constructors (ίδιο pattern με A*) ----------
 function Dlite(
     dims::NTuple{D,T};
     periodic::Union{Bool,NTuple{D,Bool}} = false,
@@ -73,11 +77,7 @@ function Dlite(
     neighborhood = diagonal_movement ? moore_neighborhood(D) : vonneumann_neighborhood(D)
     return Dlite{D,periodic,diagonal_movement,T,typeof(cost_metric)}(
         Dict{Int,Path{D,T}}(),
-        dims,
-        neighborhood,
-        admissibility,
-        walkmap,
-        cost_metric,
+        dims, neighborhood, admissibility, walkmap, cost_metric
     )
 end
 
@@ -96,157 +96,208 @@ function Dlite(
     admissibility::Float64 = 0.0,
     cost_metric::CostMetric{D} = DirectDistance{D}(),
 ) where {D,periodic}
-    @assert walkmap isa BitArray{D} || cost_metric isa PenaltyMap "Pathfinding in ContinuousSpace requires either walkmap to be specified or cost_metric to be a PenaltyMap"
+    @assert (walkmap isa BitArray{D}) || (cost_metric isa PenaltyMap)
     isnothing(walkmap) && (walkmap = BitArray(trues(size(cost_metric.pmap))))
-    Dlite(Tuple(Agents.spacesize(space));
-        periodic, diagonal_movement = true,
-        admissibility, walkmap, cost_metric
-    )
+    # χρησιμοποίησε ακέραιες διαστάσεις από τη walkmap
+    dims_int = size(walkmap)::NTuple{D,Int}
+    return Dlite(dims_int; periodic, diagonal_movement = true,
+                 admissibility, walkmap, cost_metric)
 end
 
+Base.show(io::IO, pf::Dlite{D,P,M,T,C}) where {D,P,M,T,C} =
+    print(io, "D*Lite in $D dimensions, ",
+          (P==true ? "periodic, " : (P==false ? "" : "mixed periodicity, ")),
+          (M ? "diagonal" : "orthogonal"),
+          ", ϵ=$(pf.admissibility), metric=$(pf.cost_metric)")
 
-moore_neighborhood(D) = [
-    CartesianIndex(a)
-    for a in Iterators.product([-1:1 for φ in 1:D]...) if a != Tuple(zeros(Int, D))
-]
-
-function vonneumann_neighborhood(D)
-    hypercube = CartesianIndices((repeat([-1:1], D)...,))
-    [β for β ∈ hypercube if LinearAlgebra.norm(β.I) == 1]
+# ---------- Βοηθητικά ----------
+@inline function dl_walkable(pf::Dlite{D}, u::NTuple{D,Int}) where {D}
+    all(1 .<= u .<= size(pf.walkmap)) && pf.walkmap[u...]
 end
 
-function Base.show(io::IO, pathfinder::Dlite{D,P,M}) where {D,P,M}
-    periodic = get_periodic_type(pathfinder)
-    moore = M ? "diagonal, " : "orthogonal, "
-    s =
-        "A* in $(D) dimensions, $(periodic)$(moore)ϵ=$(pathfinder.admissibility), " *
-        "metric=$(pathfinder.cost_metric)"
-    print(io, s)
+@inline function dl_neighbors(u::NTuple{D,Int}, pf::Dlite{D,true}) where {D}
+    (mod1.(u .+ β.I, size(pf.walkmap)) for β in pf.neighborhood)
 end
-get_periodic_type(::Dlite{D,false,M}) where {D,M} = ""
-get_periodic_type(::Dlite{D,true,M}) where {D,M} = "periodic, "
-get_periodic_type(::Dlite{D,P,M}) where {D,P,M} = "mixed periodicity, "
-
-struct GridCell
-    f::Int
-    g::Int
-    h::Int
+@inline function dl_neighbors(u::NTuple{D,Int}, pf::Dlite{D,false}) where {D}
+    (u .+ β.I for β in pf.neighborhood)
+end
+@inline function dl_neighbors(u::NTuple{D,Int}, pf::Dlite{D,P}) where {D,P}
+    s = size(pf.walkmap)
+    ( ntuple(i -> P[i] ? mod1(u[i]+β[i], s[i]) : u[i]+β[i], D) for β in pf.neighborhood )
 end
 
-GridCell(g::Int, h::Int, admissibility::Float64) =
-    GridCell(round(Int, g + (1 + admissibility) * h), g, h)
+# Κόστος ακμής c(u,v): αν εμπόδιο -> ∞, αλλιώς delta_cost(...)
+@inline function dl_c(pf::Dlite{D}, u::NTuple{D,Int}, v::NTuple{D,Int}) where {D}
+    (dl_walkable(pf,u) && dl_walkable(pf,v)) || return Inf
+    return delta_cost(pf, u, v)  # ήδη υπολογίζει metric+penalty
+end
 
-GridCell() = GridCell(typemax(Int), typemax(Int), typemax(Int))
+# ---------- CalculateKey ----------
+@inline function dl_calculate_key(pf::Dlite{D}, s::NTuple{D,Int}, sstart::NTuple{D,Int}) where {D}
+    g  = get(pf.g, s, Inf)
+    rhs = get(pf.rhs, s, Inf)
+    h  = delta_cost(pf, sstart, s)  # ευρετική στο ίδιο metric
+    k1 = min(g, rhs) + h + pf.km
+    k2 = min(g, rhs)
+    return (k1, k2)
+end
 
-ordering(cell) = cell.f
-
-"""
-    find_path(pathfinder::Dlite{D}, from::NTuple{D,Int}, to::NTuple{D,Int})
-Calculate the shortest path from `from` to `to` using the A* algorithm.
-If a path does not exist between the given positions, an empty linked list is returned.
-"""
-function find_path(pathfinder::Dlite{D}, from::Dims{D}, to::Dims{D}) where {D}
-    if !all(1 .<= from .<= size(pathfinder.walkmap)) ||
-        !all(1 .<= to .<= size(pathfinder.walkmap)) ||
-        !pathfinder.walkmap[from...] ||
-        !pathfinder.walkmap[to...]
-        return # nothing
+# ---------- Open set helpers ----------
+@inline function dl_open_set!(pf::Dlite, s::NTuple, key::Tuple{Float64,Float64})
+    pf.open[s] = key; pf.lookup[s] = key
+end
+@inline function dl_open_del!(pf::Dlite, s::NTuple)
+    if haskey(pf.lookup, s)
+        delete!(pf.open, s); delete!(pf.lookup, s)
     end
-    parent = Dict{Dims{D},Dims{D}}()
+end
 
-    open_list = PriorityQueue{Dims{D},GridCell}(Base.By(ordering))
-    closed_list = Set{Dims{D}}()
+# ---------- Initialize ----------
+function dl_initialize!(pf::Dlite{D}, sstart::NTuple{D,Int}, sgoal::NTuple{D,Int}) where {D}
+    empty!(pf.open); empty!(pf.lookup); empty!(pf.g); empty!(pf.rhs)
+    pf.km = 0.0
+    pf.last_start = sstart
+    pf.last_goal  = sgoal
+    pf.rhs[sgoal] = 0.0
+    dl_open_set!(pf, sgoal, dl_calculate_key(pf, sgoal, sstart))
+    return nothing
+end
 
-    enqueue!(
-        open_list,
-        from,
-        GridCell(0, delta_cost(pathfinder, from, to), pathfinder.admissibility)
-    )
+# ---------- UpdateVertex (07–09) ----------
+function dl_update_vertex!(pf::Dlite{D}, u::NTuple{D,Int}, sstart::NTuple{D,Int}) where {D}
+    gu  = get(pf.g, u, Inf)
+    rhsu = get(pf.rhs, u, Inf)
+    if gu != rhsu && haskey(pf.lookup, u)
+        dl_open_set!(pf, u, dl_calculate_key(pf, u, sstart))
+    elseif gu != rhsu && !haskey(pf.lookup, u)
+        dl_open_set!(pf, u, dl_calculate_key(pf, u, sstart))
+    elseif gu == rhsu && haskey(pf.lookup, u)
+        dl_open_del!(pf, u)
+    end
+    return nothing
+end
 
-    while !isempty(open_list)
-        cur, cell = dequeue_pair!(open_list)
-        cur == to && break
-        push!(closed_list, cur)
+# ---------- ComputeShortestPath (10–28) ----------
+function dl_compute_shortest_path!(pf::Dlite{D}) where {D}
+    sstart = pf.last_start::NTuple{D,Int}
+    sgoal  = pf.last_goal::NTuple{D,Int}
+    while !isempty(pf.open)
+        # έλεγχος cond (10)
+        u_top = peek(pf.open)
+        topkey = pf.open[u_top]   # αυτό είναι το (k1, k2)        
+        sstart_key = dl_calculate_key(pf, sstart, sstart)
+        if (topkey[1] >= sstart_key[1] && topkey[2] >= sstart_key[2]) &&
+           (get(pf.rhs, sstart, Inf) <= get(pf.g, sstart, Inf))
+            break
+        end
 
-        nbors = get_neighbors(cur, pathfinder)
-        for nbor in Iterators.filter(n -> inbounds(n, pathfinder, closed_list), nbors)
-            nbor_cell = haskey(open_list, nbor) ? open_list[nbor] : GridCell()
-            new_g_cost = cell.g + delta_cost(pathfinder, cur, nbor)
+        u = dequeue!(pf.open)
+        key_old = pf.lookup[u]
+        delete!(pf.lookup, u)
 
-            if new_g_cost < nbor_cell.g
-                parent[nbor] = cur
-                open_list[nbor] = GridCell(
-                    new_g_cost,
-                    delta_cost(pathfinder, nbor, to),
-                    pathfinder.admissibility,
-                )
+        if (key_old[1] < key_new[1]) || (key_old[1] ≈ key_new[1] && key_old[2] < key_new[2])
+            dl_open_set!(pf, u, key_new)       # (15)
+            continue
+        end
+
+        gu  = get(pf.g, u, Inf)
+        rhsu = get(pf.rhs, u, Inf)
+
+        if gu > rhsu                            # (16–21)
+            pf.g[u] = rhsu
+            for s in dl_neighbors(u, pf)
+                s == sgoal || (pf.rhs[s] = min(get(pf.rhs,s,Inf), dl_c(pf, s, u) + pf.g[u]))
+                dl_update_vertex!(pf, s, sstart)
+            end
+        else                                    # (23–28)
+            gold = gu
+            pf.g[u] = Inf
+            preds = [u]; append!(preds, collect(dl_neighbors(u, pf)))
+            for s in preds
+                if get(pf.rhs, s, Inf) == dl_c(pf, s, u) + gold
+                    if s != sgoal
+                        minrhs = Inf
+                        for sp in dl_neighbors(s, pf)
+                            minrhs = min(minrhs, dl_c(pf, s, sp) + get(pf.g, sp, Inf))
+                        end
+                        pf.rhs[s] = minrhs
+                    end
+                end
+                dl_update_vertex!(pf, s, sstart)
             end
         end
     end
-
-    agent_path = Path{D,Int64}()
-    cur = to
-    while true
-        haskey(parent, cur) || break
-        pushfirst!(agent_path, cur)
-        cur = parent[cur]
-    end
-    cur == from || return # nothing
-    return agent_path
+    return nothing
 end
 
-@inline get_neighbors(cur, pathfinder::Dlite{D,true}) where {D} =
-    (mod1.(cur .+ β.I, size(pathfinder.walkmap)) for β in pathfinder.neighborhood)
-@inline get_neighbors(cur, pathfinder::Dlite{D,false}) where {D} =
-    (cur .+ β.I for β in pathfinder.neighborhood)
-@inline function get_neighbors(cur, pathfinder::Dlite{D,P}) where {D,P}
-    s = size(pathfinder.walkmap)
-    (
-        ntuple(i -> P[i] ? mod1(cur[i] + β[i], s[i]) : cur[i] + β[i], D)
-        for β in pathfinder.neighborhood
-    )
-end
-@inline inbounds(n, pathfinder, closed) =
-    all(1 .<= n .<= size(pathfinder.walkmap)) && pathfinder.walkmap[n...] && n ∉ closed
-
-Base.isempty(id::Int, pathfinder::Dlite) =
-    !haskey(pathfinder.agent_paths, id) || isempty(pathfinder.agent_paths[id])
-
+# ---------- “Main loop” helper (34–48) ----------
 """
-    is_stationary(agent, Dlite::Dlite)
-Same, but for pathfinding with A*.
-"""
-Agents.is_stationary(
-    agent::AbstractAgent,
-    pathfinder::Dlite,
-) = isempty(agent.id, pathfinder)
+    dl_move_and_replan!(pf::Dlite, start, goal; changed_edges=nothing)
 
+Εκτελεί ένα βήμα “main loop”: υπολογίζει/επανυπολογίζει και επιστρέφει path (λίστα NTuple{D,Int}).
+Αν `changed_edges` δοθεί σαν `Vector{Tuple{NTuple{D,Int},NTuple{D,Int}}}` (= ακμές που άλλαξαν),
+γίνεται ενημέρωση (41–47) πριν το recompute.
 """
-    Pathfinding.penaltymap(pathfinder)
-Return the penalty map of a [`Pathfinding.Dlite`](@ref) if the
-[`Pathfinding.PenaltyMap`](@ref) metric is in use, `nothing` otherwise.
-
-It is possible to mutate the map directly, for example
-`Pathfinding.penaltymap(pathfinder)[15, 40] = 115`
-or `Pathfinding.penaltymap(pathfinder) .= rand(50, 50)`. If this is mutated,
-a new path needs to be planned using [`plan_route!`](@ref).
-"""
-function penaltymap(pathfinder::Dlite)
-    if pathfinder.cost_metric isa PenaltyMap
-        return pathfinder.cost_metric.pmap
+function dl_move_and_replan!(pf::Dlite{D},
+                             start::NTuple{D,Int},
+                             goal::NTuple{D,Int};
+                             changed_edges::Union{Nothing,Vector{Tuple{NTuple{D,Int},NTuple{D,Int}}}}=nothing
+) where {D}
+    if pf.last_goal != goal || pf.last_start == nothing
+        dl_initialize!(pf, start, goal)
     else
-        return nothing
+        pf.km += delta_cost(pf, pf.last_start::NTuple{D,Int}, start) # (38)
+        pf.last_start = start
     end
+
+    # apply changes (41–47)
+    if changed_edges !== nothing && !isempty(changed_edges)
+        for (u,v) in changed_edges
+            c_old = dl_c(pf, u, v)  # εδώ: παλιό κόστος -> αν έχεις log, πέρασέ το αλλιώς
+            c_new = dl_c(pf, u, v)  # με βάση pf.walkmap/pmap (ή ενημέρωσέ τα πριν)
+            if c_old > c_new
+                u != goal && (pf.rhs[u] = min(get(pf.rhs,u,Inf), dl_c(pf,u,v) + get(pf.g,v,Inf)))
+            elseif get(pf.rhs,u,Inf) == c_old + get(pf.g,v,Inf)
+                if u != goal
+                    minrhs = Inf
+                    for s_ in dl_neighbors(u, pf)
+                        minrhs = min(minrhs, dl_c(pf, u, s_) + get(pf.g, s_, Inf))
+                    end
+                    pf.rhs[u] = minrhs
+                end
+            end
+            dl_update_vertex!(pf, u, start)
+        end
+    end
+
+    dl_compute_shortest_path!(pf)
+
+    # greedy extraction από g-values
+    path = NTuple{D,Int}[]
+    cur = start
+    push!(path, cur)
+    maxsteps = prod(pf.dims) # ασφαλιστική δικλείδα
+    steps = 0
+    while cur != goal && steps ≤ maxsteps
+        steps += 1
+        best = nothing; bestval = Inf
+        for nb in dl_neighbors(cur, pf)
+            dl_walkable(pf, nb) || continue
+            val = dl_c(pf, cur, nb) + get(pf.g, nb, Inf)
+            if val < bestval
+                bestval = val; best = nb
+            end
+        end
+        best === nothing && break
+        push!(path, best); cur = best
+    end
+    return path
 end
 
-"""
-    Pathfinding.remove_agent!(agent, model, pathfinder)
-
-The same as `remove_agent!(agent, model)`, but also removes the agent's path data
-from `pathfinder`.
-"""
-function Agents.remove_agent!(agent::AbstractAgent, model::ABM, pathfinder::Dlite)
-    delete!(pathfinder.agent_paths, agent.id)
-    Agents.remove_agent_from_model!(agent, model)
-    Agents.remove_agent_from_space!(agent, model)
+# ---------- Συμβατότητες με plotting/helpers ----------
+function penaltymap(pf::Dlite)
+    pf.cost_metric isa PenaltyMap ? pf.cost_metric.pmap : nothing
 end
+
+Base.isempty(id::Int, pf::Dlite) =
+    !haskey(pf.agent_paths, id) || isempty(pf.agent_paths[id])
