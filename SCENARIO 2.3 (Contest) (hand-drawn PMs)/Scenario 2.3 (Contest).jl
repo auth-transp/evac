@@ -14,6 +14,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Observables
     using Random
     using Statistics
+    using StatsBase
 end
 
 
@@ -35,6 +36,7 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
     heightmap_data = load("Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
+    #bit_hmap = BitArray(heightmap .> 150)
 
     # Φόρτωση penalty maps
     penalty_map = load("Penalty Map/6.bmp")
@@ -43,6 +45,8 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
 end
 
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
+
+
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
@@ -88,7 +92,7 @@ end
 function agent_step!(person, model)
     position = floor.(Int, person.pos)
    # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
-    Ct = penalty_map[position[1], position[2]]
+     Ct = penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, dt)
 
@@ -131,7 +135,6 @@ model = ABM(
   agent_step!  = agent_step!,
   model_step!  = model_step!
 )
-
 
 for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
@@ -367,7 +370,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO 2.1 (Contest)/Simulation Results/SCENARIO_2.1_$(seed).mp4"
+    video_file = "SCENARIO 2.3 (Contest) (hand-drawn PMs)/Simulation Results/SCENARIO_2.3_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -400,9 +403,9 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO 2.1 (Contest)/Simulation Results/SCENARIO_2.1_$(seed).csv"
+    csv_file = "SCENARIO 2.3 (Contest) (hand-drawn PMs)/Simulation Results/SCENARIO_2.3_$(seed).csv"
     CSV.write(csv_file, df)
-    CSV.write(joinpath("SCENARIO 2.1 (Contest)", "Simulation Results", "SCENARIO_2.1_tl_agents_$(seed).csv"),
+    CSV.write(joinpath("SCENARIO 2.3 (Contest) (hand-drawn PMs)", "Simulation Results", "SCENARIO_2.3_tl_agents_$(seed).csv"),
           select(df, [:step, :agent_id, :toxicload]))
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end
@@ -413,13 +416,13 @@ begin
 
     dt = @isdefined(dt) ? dt : 1.0
     seed_str = @isdefined(seed) ? string(seed) : nothing
-    folder = joinpath("SCENARIO 2.1 (Contest)", "Simulation Results")
+    folder = joinpath("SCENARIO 2.3 (Contest) (hand-drawn PMs)", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "SCENARIO_2.1_tl_agents_$(seed_str).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "SCENARIO_2.3_tl_agents_$(seed_str).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *_tl_agents_*.csv
-        csvs = filter(f -> occursin(r"^SCENARIO_2\.1_tl_agents_.*\.csv$", f), readdir(folder))
+        csvs = filter(f -> occursin(r"^SCENARIO_2\.3_tl_agents_.*\.csv$", f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *_tl_agents_*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
         latest_idx = argmax(getfield.(stats, :mtime))
@@ -429,54 +432,101 @@ begin
 
     df = CSV.read(csv_file, DataFrame)
 
-    # Σταθερή σειρά πραγμάτων: αντιστοίχισε κάθε agent_id σε σταθερό x-index
-    agents = sort(unique(df.agent_id))
-    idxmap = Dict(a => i for (i, a) in enumerate(agents))
-    x = collect(1:length(agents))  # μία θέση στον άξονα Χ για κάθε agent
+# --- Σταθερά bins ---
+    # Εσωτερικά bins αυστηρά στο (0,3) με βήμα 0.5 -> centers: 0.25, 0.75, ..., 2.75
+    edges_inner   = 0:0.5:3.0
+    centers_inner = (edges_inner[1:end-1] .+ edges_inner[2:end]) ./ 2
+    bin_w_inner   = 0.45
 
-    # Πόσα βήματα θα παίξουμε; Θέλεις 400.
+    # Άκρες (0 και 3) σαν ξεχωριστές μπάρες με μικρό offset για να μην επικαλύπτονται
+    edge_offset = 0.30
+    x0_pos      = 0.0 - edge_offset   # π.χ. -0.30
+    x3_pos      = 3.0 + edge_offset   # π.χ.  3.30
+    bin_w_edge  = 0.30
+
+    # Counts για ΑΝΟΙΚΤΟ (0,3) χωρίς StatsBase
+    function bin_counts_open(values::AbstractVector{<:Real}, edges::AbstractVector{<:Real})
+        counts = zeros(Int, length(edges) - 1)
+        @inbounds for v in values
+            if v > edges[1] && v < edges[end]           # αυστηρά (0,3)
+                idx = searchsortedlast(edges, v)
+                idx = clamp(idx, 1, length(counts))
+                counts[idx] += 1
+            end
+        end
+        return counts
+    end
+
+    # Formatter για ticks (χωρίς ->)
+    function mytickfmt(x::Real)
+        string(round(x; digits=1))
+    end
+    function mytickfmt(xs::AbstractVector{<:Real})
+        string.(round.(xs; digits=1))
+    end
+
+    # --- Παράμετροι χρόνου / y-scale ---
     T_avail = maximum(df.step)
-    T_play  = min(400, T_avail)  # αν δεν έχεις 400 στο CSV, θα παίξει μέχρι όπου υπάρχουν δεδομένα
+    T_play  = min(400, T_avail)               # παίξε μέχρι 400 ή όσο υπάρχει
+    n_agents_guess = maximum(combine(groupby(df, :step), nrow).nrow)
 
-    # Στήσιμο figure/axis
-    fig = Figure(; size = (1000, 500))
-    ax  = CairoMakie.Axis(fig[1,1],
-        title  = "Per-Agent Toxic Load",
-        xlabel = "Agent (index)",
-        ylabel = "Toxic load",
-        yticks = (1:3),      # μόνο 1,2,3 ως ticks
+    # --- Figure / Axis ---
+    fig = Figure(; size = (1000, 600))
+    ax  = CairoMakie.Axis(fig[1,1];
+        title  = "Toxic Load (X) vs Agents Count (Y) — bins 0 & 3 separate, inner step 0.5",
+        xlabel = "Toxic load",
+        ylabel = "Agents (count)",
+        yticks = 0:10:n_agents_guess          # δείκτες Υ ανά 10
     )
-    xlims!(ax, 0.5, length(agents) + 0.5)
-    ylims!(ax, 0, 3.05)      # clamp στο 0–3 (όπως ορίζει η λογική σου)
+    xlims!(ax, -0.5, 3.5)                      # λίγο περιθώριο για τις άκρες
+    ylims!(ax, 0, n_agents_guess)              # προσαρμόσ’ το αν θες
 
-    # Overlay για τον χρόνο
+    xt = collect(0.0:0.5:3.0)
+    ax.xticks = xt
+    ax.xtickformat = mytickfmt
+    ax.xticklabelrotation = pi/4               # προαιρετικό
+
+    # Overlay χρόνου
     frame_obs = Observable(0)
     lbl = Label(fig, @lift("Time elapsed = $((($frame_obs-1)*dt)) s"),
                 fontsize = 16, padding = (6,10,6,10), halign = :left)
     fig[1,1, TopLeft()] = lbl
 
-    # Παρατηρήσιμο για τις τιμές Y ανά agent
-    yobs = Observable(zeros(Float64, length(agents)))
-    bars = barplot!(ax, x, yobs;
-        width = 0.8,          # <= σωστή παράμετρος
-        color = :dodgerblue,
-        strokewidth = 0
-    )
+    # --- Τρία layers μπαρών: εσωτερικά + 0 + 3 ---
+   y_inner = Observable(zeros(Float64, length(centers_inner)))  # (0,3) ανά 0.5
+    y0      = Observable([0.0])                                  # bin για 0
+    y3      = Observable([0.0])                                  # bin για 3
 
-    # Εγγραφή βίντεο
-    out_file = joinpath(folder, "SCENARIO_2.1_agents_vs_tl_$(seed_str).mp4")
-    record(fig, out_file, 1:T_play; framerate=30) do frame
+    # Χρώματα για τα εσωτερικά bins ανά TL ζώνη (με βάση το center του bin)
+    inner_cols = [ c for x in centers_inner for c in
+        (x < 1.0  ? (:dodgerblue,) :          # (0,1)
+        x < 2.0  ? (:gold,)       :          # [1,2)
+                 (:orange,)) ]            # [2,3)
+
+    # εσωτερικές μπάρες (vector χρωμάτων)
+    barplot!(ax, centers_inner, y_inner; width = bin_w_inner, color = inner_cols, strokewidth = 0)
+
+    # άκρες: 0 = γκρι, 3 = κόκκινο
+    barplot!(ax, [x0_pos], y0; width = bin_w_edge, color = :gray35,  strokewidth = 0)
+    barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
+
+    # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
+    out_file = joinpath(folder, "SCENARIO_2.3_hist_$(seed_str).mp4")
+    record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
-        # Πάρε τις τιμές του frame
-        sub = df[df.step .== frame, [:agent_id, :toxicload]]
-        # Γέμισε διανύσμα Y (default 0 για agents που ίσως λείπουν)
-        y = zeros(Float64, length(agents))
-        @inbounds for r in eachrow(sub)
-            y[idxmap[r.agent_id]] = r.toxicload
-        end
-        yobs[] = y
+        tl = Vector(df[df.step .== frame, :toxicload])
+
+        count0       = count(==(0.0), tl)                 # ακριβώς 0
+        count3       = count(==(3.0), tl)                 # ακριβώς 3
+        counts_inner = bin_counts_open(tl, edges_inner)   # μόνο (0,3) ανά 0.5
+
+        y_inner[] = Float64.(counts_inner)
+        y0[]      = [Float64(count0)]
+        y3[]      = [Float64(count3)]
+
+        # Προαιρετικό auto-scale μόνο στον Υ:
+        # ylims!(ax, 0, max(1, maximum(vcat(y0[][1], y_inner[], y3[][1]))))
     end
 
-    println("✔ Βίντεο per-agent ολοκληρώθηκε: $out_file")
-    println("✔ Από CSV: $csv_file")
+    println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")
 end
