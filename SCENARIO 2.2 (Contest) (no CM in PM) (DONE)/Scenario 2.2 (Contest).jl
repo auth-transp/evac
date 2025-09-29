@@ -369,7 +369,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO 2.1 (Contest)/Simulation Results/SCENARIO_2.1_$(seed).mp4"
+    video_file = "SCENARIO 2.2 (Contest) (no CM in PM) (DONE)/Simulation Results/SCENARIO_2.2_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -402,9 +402,9 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO 2.2 (Contest) (no CM in PM)/Simulation Results/SCENARIO_2.2_$(seed).csv"
+    csv_file = "SCENARIO 2.2 (Contest) (no CM in PM) (DONE)/Simulation Results/SCENARIO_2.2_$(seed).csv"
     CSV.write(csv_file, df)
-    CSV.write(joinpath("SCENARIO 2.2 (Contest) (no CM in PM)", "Simulation Results", "SCENARIO_2.2_tl_agents_$(seed).csv"),
+    CSV.write(joinpath("SCENARIO 2.2 (Contest) (no CM in PM) (DONE)", "Simulation Results", "SCENARIO_2.2_tl_agents_$(seed).csv"),
           select(df, [:step, :agent_id, :toxicload]))
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end
@@ -415,7 +415,7 @@ begin
 
     dt = @isdefined(dt) ? dt : 1.0
     seed_str = @isdefined(seed) ? string(seed) : nothing
-    folder = joinpath("SCENARIO 2.2 (Contest) (no CM in PM)", "Simulation Results")
+    folder = joinpath("SCENARIO 2.2 (Contest) (no CM in PM) (DONE)", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
     csv_file = seed_str === nothing ? nothing : joinpath(folder, "SCENARIO_2.2_tl_agents_$(seed_str).csv")
@@ -431,67 +431,101 @@ begin
 
     df = CSV.read(csv_file, DataFrame)
 
-    # --- Σταθερά bins & βοηθητικά ---
-    bins    = 0:0.5:3.00                         # ΣΤΑΘΕΡΟΣ οριζόντιος άξονας
-    centers = (bins[1:end-1] .+ bins[2:end]) ./ 2
-    bin_w   = first(diff(bins)) * 0.98
+# --- Σταθερά bins ---
+    # Εσωτερικά bins αυστηρά στο (0,3) με βήμα 0.5 -> centers: 0.25, 0.75, ..., 2.75
+    edges_inner   = 0:0.5:3.0
+    centers_inner = (edges_inner[1:end-1] .+ edges_inner[2:end]) ./ 2
+    bin_w_inner   = 0.45
 
-    # χειροποίητος υπολογισμός counts ανά bin (χωρίς StatsBase)
-    function bin_counts(values::AbstractVector{<:Real}, bins::AbstractVector{<:Real})
-        counts = zeros(Int, length(bins) - 1)
+    # Άκρες (0 και 3) σαν ξεχωριστές μπάρες με μικρό offset για να μην επικαλύπτονται
+    edge_offset = 0.30
+    x0_pos      = 0.0 - edge_offset   # π.χ. -0.30
+    x3_pos      = 3.0 + edge_offset   # π.χ.  3.30
+    bin_w_edge  = 0.30
+
+    # Counts για ΑΝΟΙΚΤΟ (0,3) χωρίς StatsBase
+    function bin_counts_open(values::AbstractVector{<:Real}, edges::AbstractVector{<:Real})
+        counts = zeros(Int, length(edges) - 1)
         @inbounds for v in values
-            if v >= bins[1] && v <= bins[end]
-                idx = searchsortedlast(bins, v)
-                idx = clamp(idx, 1, length(counts))  # αν v==bins[end] το βάζουμε στο τελευταίο bin
+            if v > edges[1] && v < edges[end]           # αυστηρά (0,3)
+                idx = searchsortedlast(edges, v)
+                idx = clamp(idx, 1, length(counts))
                 counts[idx] += 1
             end
         end
         return counts
     end
 
-    # --- Παράμετροι χρόνου ---
+    # Formatter για ticks (χωρίς ->)
+    function mytickfmt(x::Real)
+        string(round(x; digits=1))
+    end
+    function mytickfmt(xs::AbstractVector{<:Real})
+        string.(round.(xs; digits=1))
+    end
+
+    # --- Παράμετροι χρόνου / y-scale ---
     T_avail = maximum(df.step)
-    T_play  = min(400, T_avail)                   # μέχρι 1200 frames
+    T_play  = min(400, T_avail)               # παίξε μέχρι 400 ή όσο υπάρχει
     n_agents_guess = maximum(combine(groupby(df, :step), nrow).nrow)
 
     # --- Figure / Axis ---
     fig = Figure(; size = (1000, 600))
     ax  = CairoMakie.Axis(fig[1,1];
-        title  = "Toxic Load (X) vs Agents Count (Y)",
+        title  = "Toxic Load (X) vs Agents Count (Y) — bins 0 & 3 separate, inner step 0.5",
         xlabel = "Toxic load",
-        ylabel = "Agents with toxic load (>0)",
+        ylabel = "Agents (count)",
+        yticks = 0:10:n_agents_guess          # δείκτες Υ ανά 10
     )
-    xlims!(ax, first(bins), last(bins))           # κρατάει ΣΤΑΘΕΡΟ τον Χ
-    ylims!(ax, 0, n_agents_guess/4)
+    xlims!(ax, -0.5, 3.5)                      # λίγο περιθώριο για τις άκρες
+    ylims!(ax, 0, n_agents_guess)              # προσαρμόσ’ το αν θες
 
-    # Float64 ticks στον Χ (π.χ. ανά 0.5, με 2 δεκαδικά)
-    tick_step = 0.5
-    xt = collect(first(bins):tick_step:last(bins))
-    xtlabs = string.(round.(xt; digits=2))
-    ax.xticks = (xt, xtlabs)        # <- σωστό για Axis
-    ax.xticklabelrotation = pi/4     # προαιρετικό
-    ax.yticks = 0:5:n_agents_guess/4
+    xt = collect(0.0:0.5:3.0)
+    ax.xticks = xt
+    ax.xtickformat = mytickfmt
+    ax.xticklabelrotation = pi/4               # προαιρετικό
 
-    # overlay χρόνου
+    # Overlay χρόνου
     frame_obs = Observable(0)
     lbl = Label(fig, @lift("Time elapsed = $((($frame_obs-1)*dt)) s"),
                 fontsize = 16, padding = (6,10,6,10), halign = :left)
     fig[1,1, TopLeft()] = lbl
 
-    # --- Μπάρες ΣΤΑΘΕΡΕΣ στον Χ, δυναμικό Υ ---
-    yobs = Observable(zeros(Float64, length(centers)))
-    barplot!(ax, centers, yobs; width = bin_w, color = :dodgerblue, strokewidth = 0)
+    # --- Τρία layers μπαρών: εσωτερικά + 0 + 3 ---
+   y_inner = Observable(zeros(Float64, length(centers_inner)))  # (0,3) ανά 0.5
+    y0      = Observable([0.0])                                  # bin για 0
+    y3      = Observable([0.0])                                  # bin για 3
 
-    # --- Εγγραφή βίντεο (αλλάζει ΜΟΝΟ το Y) ---
-    out_file = joinpath(folder, "SCENARIO_2.2_hist_fixedX_floatTicks_$(seed_str).mp4")
+    # Χρώματα για τα εσωτερικά bins ανά TL ζώνη (με βάση το center του bin)
+    inner_cols = [ c for x in centers_inner for c in
+        (x < 1.0  ? (:dodgerblue,) :          # (0,1)
+        x < 2.0  ? (:gold,)       :          # [1,2)
+                 (:orange,)) ]            # [2,3)
+
+    # εσωτερικές μπάρες (vector χρωμάτων)
+    barplot!(ax, centers_inner, y_inner; width = bin_w_inner, color = inner_cols, strokewidth = 0)
+
+    # άκρες: 0 = γκρι, 3 = κόκκινο
+    barplot!(ax, [x0_pos], y0; width = bin_w_edge, color = :gray35,  strokewidth = 0)
+    barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
+
+    # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
+    out_file = joinpath(folder, "SCENARIO_2.2_hist_$(seed_str).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])
-        tl_pos = tl[tl .> 0.0]                    # μετράμε μόνο όσους έχουν toxicload > 0
-        yobs[] = Float64.(bin_counts(tl_pos, bins))
-        # προαιρετικό auto-scale μόνο στον Υ:
-        #ylims!(ax, 0, max(1, maximum(yobs[])))
+
+        count0       = count(==(0.0), tl)                 # ακριβώς 0
+        count3       = count(==(3.0), tl)                 # ακριβώς 3
+        counts_inner = bin_counts_open(tl, edges_inner)   # μόνο (0,3) ανά 0.5
+
+        y_inner[] = Float64.(counts_inner)
+        y0[]      = [Float64(count0)]
+        y3[]      = [Float64(count3)]
+
+        # Προαιρετικό auto-scale μόνο στον Υ:
+        # ylims!(ax, 0, max(1, maximum(vcat(y0[][1], y_inner[], y3[][1]))))
     end
 
-    println("Βίντεο (σταθερές μπάρες στον Χ, float ticks) σώθηκε ως: $out_file")
+    println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")
 end
