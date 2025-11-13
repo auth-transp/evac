@@ -1,5 +1,6 @@
 {
     "julia.environmentPath": "c:\\Users\\gavin\\Documents\\GitHub\\evac\\evac2",
     "CodeGPT.apiKey": "OpenAI",
-    "python.REPL.enableREPLSmartSend": false
+    "python.terminal.activateEnvironment": false,
+    "python.terminal.launchArgs": []
 }
