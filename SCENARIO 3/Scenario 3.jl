@@ -20,28 +20,6 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     const LocalPF = Pathfinding           # θα καλούμε LocalPF.xxx για ΟΛΑ
 end       
 
-# ασφαλής helper για ανάκτηση του pathfinder από model
-function get_model_pathfinder(model)
-    # αν model δεν έχει properties πεδίο -> nothing
-    if !hasproperty(model, :properties)
-        return nothing
-    end
-    props = get(model, :properties, nothing)
-    if props === nothing
-        return nothing
-    end
-    # NamedTuple case
-    if isa(props, NamedTuple)
-        return get(props, :pathfinder, nothing)
-    end
-    # Dict-like case
-    if isa(props, AbstractDict)
-        return get(props, :pathfinder, nothing)
-    end
-    return nothing
-end
-
-
 @agent struct AgentEscapes(ContinuousAgent{2, Float64})
     age::Float64
     mass::Float64

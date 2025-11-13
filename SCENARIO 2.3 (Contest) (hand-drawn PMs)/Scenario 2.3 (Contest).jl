@@ -60,7 +60,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a larger range of values from the heightmap array # [2] stands for the 2nd row
     MW = 34 #Molecular weight of H2S in g/mol
-    dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    dims = (size(heightmap))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
 end    
 
@@ -73,7 +73,7 @@ end
 
     ## Note that the dimensions of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
-    space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
+    space = ContinuousSpace(size(heightmap); periodic = false, spacing = 1)
 
 
 begin

@@ -38,12 +38,12 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
 
     # Φόρτωση penalty maps
-    penalty_map_data = load("Penalty Map/6.bmp")
+    penalty_map_data = load("Concentration Map/6.bmp")
     penalty_map_data = permutedims(channelview(penalty_map_data), [2,3,1])[:,:,1]
     global penalty_map = floor.(Int, convert.(Float64, penalty_map_data) * 500)
 end
 
-#NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
+NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 
 
@@ -76,7 +76,7 @@ end
 
 
 begin
-    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(heightmap, MaxDistance{2}()))
+    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
     properties = (
         pathfinder = pathfinder,
         heightmap = heightmap,
@@ -312,7 +312,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
-    heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
+    heatmap!(ax, NPM; colormap=:grays, alpha=0.3)
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),

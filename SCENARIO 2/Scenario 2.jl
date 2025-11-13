@@ -55,7 +55,6 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)    # Define the ag_range_y variable as a range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
-    MW = 34 #Molecular weight of H2S in g/mol
     dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
 end    
@@ -150,7 +149,7 @@ function setupToxic()                                               # Define the
     Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]                   # Define the Arho array for the first row and columns 2 to 6                # odor
     Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]         # Define the Arho array for the second row and columns 2 to 6               # irritation
     Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm    # Define the Arho array for the third row and columns 2 to 6                # edema
-    MW = 34 #Molecular Weight of H2S
+    MW = 34 #Molecular weight of H2S in g/mol
     Arho *= MW/24.04 #mg/m^3                                        # Multiply the Arho array by the molecular weight of H2S divided by 24.04
     Arho = Arho'                                                    # Transpose the Arho array 
     Atime = Atime*60 #seconds                                       # Multiply the Atime array by 60 seconds to convert to seconds              
