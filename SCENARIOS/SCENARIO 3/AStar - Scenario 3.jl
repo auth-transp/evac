@@ -33,26 +33,39 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
 end
 
 
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
-
-    # heightmap
+begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM10)
+    # heightmap (unchanged)
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
 
-    # Φόρτωση penalty maps
-    penalty_map = load("Concentration Maps/6.bmp")
-    penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
-    global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
+    # --- Load all concentration maps 1..10 as Float64 arrays ---
+    const NUM_CMS = 10
+    cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)
+    for k in 1:NUM_CMS
+        fn = joinpath("Concentration Maps", string(k) * ".bmp")
+        img = load(fn)
+        img = permutedims(channelview(img), [2,3,1])[:,:,1]
+        cm_list[k] = convert.(Float64, img) .* 500.0   # keep same scaling as before
+    end
+
+    # basic check: dimensions match heightmap
+    for k in 1:NUM_CMS
+        @assert size(cm_list[k]) == size(heightmap) "Concentration map $k size mismatch with heightmap"
+    end
+
+    # start with first CM
+    global penalty_map = copy(cm_list[1])
 end
 
-NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
+NPM = heightmap .+ penalty_map
+NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 3                                                       # Define the n_agents variable as 3
+    n_agents = 20                                                       # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -77,7 +90,7 @@ end
 
 
 begin
-    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
+    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM_int, MaxDistance{2}()))
     properties = (
         pathfinder = pathfinder,
         heightmap = heightmap,
@@ -307,8 +320,9 @@ end
 
 begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 400
-
-    # -- Στήσιμο Figure & Axis --
+frames_per_map = 40
+const NUM_MAPS = 10
+# -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
     ax  = Makie.Axis(fig[1,1];
                title  = "Evacuation with Toxic Trail",
@@ -370,41 +384,72 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         toxicload  = Float64[]
     )
 
-    # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(seed).mp4"
-    record(fig, video_file, 1:T; framerate=30) do frame
-        # 1) ενημέρωση του frame counter
-        frame_obs[] = frame
-        # 2) βήμα προσομοίωσης
-        step!(model, agent_step!, model_step!, 1)
 
-        # 3) ενημέρωση των trails
-        for (i,a) in enumerate(allagents(model))
-            lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
-        end
+video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(seed).mp4"
+csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(seed).csv"  # added
 
-        # 4) ενημέρωση θέσεων & δυναμικού χρώματος
-        xs = [a.pos[1] for a in allagents(model)]
-        ys = [a.pos[2] for a in allagents(model)]
-        posobs[] = Point2f.(xs, ys)
-        colobs[] = [personcolor(a) for a in allagents(model)]
+# keep a variable for the currently active map index
+current_map_idx = 1
 
-        # 5) συλλογή δεδομένων στο DataFrame
+record(fig, video_file, 1:T; framerate=30) do frame
+    # update frame counter observable
+    frame_obs[] = frame
+
+    # 1) step the model normally
+    step!(model, agent_step!, model_step!, 1)
+
+    # 2) determine which CM index should be active on this frame
+    global current_map_idx  # Declare `current_map_idx` as global
+    new_idx = min(NUM_MAPS, Int(ceil(frame / frames_per_map)))
+    if new_idx != current_map_idx
+        # instant swap of penalty_map
+        current_map_idx = new_idx
+        penalty_map .= cm_list[current_map_idx]   # in-place replace values
+
+        # recompute combined penalty map
+        NPM = heightmap .+ penalty_map
+        NPM_int = round.(Int, NPM)
+
+        # recreate the global pathfinder (do not try to set model.pathfinder)
+        global pathfinder
+        pathfinder = AStar(space;
+            walkmap     = walkmap,
+            cost_metric = PenaltyMap(NPM_int, MaxDistance{2}()))
+
+        # replan for all agents using the new global pathfinder
         for a in allagents(model)
-            push!(df, (
-                frame,
-                a.id,
-                a.pos[1],
-                a.pos[2],
-                a.toxicload
-            ))
+            plan_best_route!(a, model.goal, pathfinder)
         end
+
+        # optional: print/log
+        println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
+    end
+
+    # 3) update trails/visuals as before
+    for (i, a) in enumerate(allagents(model))
+        lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
+    end
+
+    xs = [a.pos[1] for a in allagents(model)]
+    ys = [a.pos[2] for a in allagents(model)]
+    posobs[] = Point2f.(xs, ys)
+    colobs[] = [personcolor(a) for a in allagents(model)]
+
+    # 4) collect data
+    for a in allagents(model)
+        push!(df, (
+            frame,
+            a.id,
+            a.pos[1],
+            a.pos[2],
+            a.toxicload
+        ))
+    end
+
+    # 5) stop condition: after map 10 completes (frame == NUM_MAPS*frames_per_map) the record ends automatically
     end
 
     println("Το animation σώθηκε ως $video_file")
-
-    # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(seed).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end
