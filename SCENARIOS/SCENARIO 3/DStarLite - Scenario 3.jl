@@ -64,14 +64,14 @@ NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 20                                                        # Define the n_agents variable as 3
+    n_agents = 5                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
     speed = 5.                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
-    ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)    # Define the ag_range_y variable as a range of values from the heightmap array # [1] stands for the 1st row
-    ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
+    ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
+    ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
     dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
 end    
@@ -149,17 +149,17 @@ model = ABM(
   model_step!  = model_step!
 )
 
-
-for _ in 1:n_agents
-    age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
-    mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
-    vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
-    pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
-    person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    # plan using the global `pathfinder`
-    plan_best_route!(person, dests, pathfinder)
+@time   begin
+    for _ in 1:n_agents
+        age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
+        mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
+        vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
+        pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+        person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
+        # plan using the global `pathfinder`
+        plan_best_route!(person, dests, pathfinder)
+    end
 end
-
 
 
 function setupToxic()                                               # Define the setupToxic function
@@ -318,20 +318,19 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
     end
 end
 
+@time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
+    const T = 600
+    frames_per_map = 60
+    const NUM_MAPS = 10
 
-begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 400
-frames_per_map = 40
-const NUM_MAPS = 10
 
-
-# -- Στήσιμο Figure & Axis --
+    # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
     ax  = Makie.Axis(fig[1,1];
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
-    heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
+    heatmap!(ax, NPM; colormap=:grays, alpha=0.3)
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),
@@ -349,7 +348,7 @@ const NUM_MAPS = 10
     fontsize = 16,
     padding = (6, 10, 6, 10),
     halign = :left
-)
+    )
     fig[1,1, TopLeft()] = counter_lbl  # αγκίστρωση πάνω-αριστερά στο ίδιο κελί με τον άξονα
 
     # -- Observables για θέση & χρώμα --
@@ -388,68 +387,69 @@ const NUM_MAPS = 10
     )
 
 
-video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(seed).mp4"
-csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(seed).csv"  # added
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed).mp4"
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed).csv"  # added
 
-# keep a variable for the currently active map index
-current_map_idx = 1
+    # keep a variable for the currently active map index
+    current_map_idx = 1
 
-record(fig, video_file, 1:T; framerate=30) do frame
-    # update frame counter observable
-    frame_obs[] = frame
+    record(fig, video_file, 1:T; framerate=30) do frame
+        # update frame counter observable
+        frame_obs[] = frame
 
-    # 1) step the model normally
-    step!(model, agent_step!, model_step!, 1)
+        # 1) step the model normally
+        step!(model, agent_step!, model_step!, 1)
 
-    # 2) determine which CM index should be active on this frame
-    global current_map_idx  # Declare `current_map_idx` as global
-    new_idx = min(NUM_MAPS, Int(ceil(frame / frames_per_map)))
-    if new_idx != current_map_idx
-        # instant swap of penalty_map
-        current_map_idx = new_idx
-        penalty_map .= cm_list[current_map_idx]   # in-place replace values
+        # 2) determine which CM index should be active on this frame
+        global current_map_idx  # Declare `current_map_idx` as global
+        new_idx = min(NUM_MAPS, Int(ceil(frame / frames_per_map)))
+        if new_idx != current_map_idx
+            # instant swap of penalty_map
+            current_map_idx = new_idx
+            penalty_map .= cm_list[current_map_idx]   # in-place replace values
 
-        # recompute combined penalty map
-        NPM = heightmap .+ penalty_map
-        NPM_int = round.(Int, NPM)
+            # recompute combined penalty map
+            NPM = heightmap .+ penalty_map
+            NPM_int = round.(Int, NPM)
 
-        # recreate the global pathfinder (do not try to set model.pathfinder)
-        global pathfinder
-        pathfinder = DStarLite(space;
+
+            # recreate the global pathfinder (do not try to set model.pathfinder)
+            global pathfinder
+            pathfinder = DStarLite(space;
             walkmap     = walkmap,
             cost_metric = PenaltyMap(NPM_int, MaxDistance{2}()))
 
-        # replan for all agents using the new global pathfinder
-        for a in allagents(model)
-            plan_best_route!(a, model.goal, pathfinder)
+            # replan for all agents using the new global pathfinder
+            for a in allagents(model)
+                plan_best_route!(a, model.goal, pathfinder)
+            end
+
+            # optional: print/log
+            println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
         end
 
-        # optional: print/log
-        println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
-    end
+        # 3) update trails/visuals as before
+        for (i, a) in enumerate(allagents(model))
+            lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
+        end
 
-    # 3) update trails/visuals as before
-    for (i, a) in enumerate(allagents(model))
-        lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
-    end
+        xs = [a.pos[1] for a in allagents(model)]
+        ys = [a.pos[2] for a in allagents(model)]
+        posobs[] = Point2f.(xs, ys)
+        colobs[] = [personcolor(a) for a in allagents(model)]
 
-    xs = [a.pos[1] for a in allagents(model)]
-    ys = [a.pos[2] for a in allagents(model)]
-    posobs[] = Point2f.(xs, ys)
-    colobs[] = [personcolor(a) for a in allagents(model)]
+        # 4) collect data
+        for a in allagents(model)
+            push!(df, (
+                frame,
+                a.id,
+                a.pos[1],
+                a.pos[2],
+                a.toxicload
+            ))
+        end
 
-    # 4) collect data
-    for a in allagents(model)
-        push!(df, (
-            frame,
-            a.id,
-            a.pos[1],
-            a.pos[2],
-            a.toxicload
-        ))
-    end
-
-    # 5) stop condition: after map 10 completes (frame == NUM_MAPS*frames_per_map) the record ends automatically
+        # 5) stop condition: after map 10 completes (frame == NUM_MAPS*frames_per_map) the record ends automatically
     end
 
     println("Το animation σώθηκε ως $video_file")
@@ -462,14 +462,14 @@ begin
 
     dt = @isdefined(dt) ? dt : 1.0
     seed_str = @isdefined(seed) ? string(seed) : nothing
-    folder = joinpath("SCENARIO 3", "Simulation Results")
+    folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "SCENARIO_3_tl_agents_$(seed_str).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str).csv")
     if csv_file === nothing || !isfile(csv_file)
-        # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *_tl_agents_*.csv
-        csvs = filter(f -> occursin(r"^SCENARIO_3_tl_agents_.*\.csv$", f), readdir(folder))
-        @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *_tl_agents_*.csv στο $(folder)."
+        # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
+        csvs = filter(f -> occursin(r"^DStarLite_SCENARIO_3_.*\.csv$", f), readdir(folder))
+        @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *DStarLite_SCENARIO_3_*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
         latest_idx = argmax(getfield.(stats, :mtime))
         csv_file = joinpath(folder, csvs[latest_idx])
@@ -513,7 +513,7 @@ begin
 
     # --- Παράμετροι χρόνου / y-scale ---
     T_avail = maximum(df.step)
-    T_play  = min(400, T_avail)               # παίξε μέχρι 400 ή όσο υπάρχει
+    T_play  = min(T, T_avail)               # παίξε μέχρι 400 ή όσο υπάρχει
     n_agents_guess = maximum(combine(groupby(df, :step), nrow).nrow)
 
     # --- Figure / Axis ---
@@ -539,7 +539,7 @@ begin
     fig[1,1, TopLeft()] = lbl
 
     # --- Τρία layers μπαρών: εσωτερικά + 0 + 3 ---
-   y_inner = Observable(zeros(Float64, length(centers_inner)))  # (0,3) ανά 0.5
+    y_inner = Observable(zeros(Float64, length(centers_inner)))  # (0,3) ανά 0.5
     y0      = Observable([0.0])                                  # bin για 0
     y3      = Observable([0.0])                                  # bin για 3
 
@@ -557,7 +557,7 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "SCENARIO_3_hist_$(seed_str).mp4")
+    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])
