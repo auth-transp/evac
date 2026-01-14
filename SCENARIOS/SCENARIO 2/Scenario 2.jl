@@ -14,10 +14,6 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Observables
     using Makie
     using CSV
-
-    local_agents = joinpath(@__DIR__, "Agents")
-    LA = local_agents
-    include(LA)
 end                          
 
 
@@ -39,11 +35,15 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
+    heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
 
     # Φόρτωση penalty maps
-    penalty_map = load("Penalty Map/6.bmp")
+    penalty_map = load("Concentration Maps/6.bmp")
     penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
     global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
+    
+    # Check dimension consistency
+    @assert size(penalty_map) == size(heightmap) "penalty_map dimensions $(size(penalty_map)) do not match heightmap dimensions $(size(heightmap))"
 end
 
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
@@ -51,16 +51,22 @@ NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 100                                                        # Define the n_agents variable as 3
+    n_agents = 50                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
     speed = 5.                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
-    ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)    # Define the ag_range_y variable as a range of values from the heightmap array # [1] stands for the 1st row
-    ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
+    ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
+    ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
     dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
+    
+    # Set walkmap to false in white areas of the heightmap (after reversal, white = high values)
+    # White areas are where heightmap value is above threshold (e.g., > 245)
+    # Black and grey areas (low to medium values) remain walkable
+    white_threshold = 245
+    walkmap[heightmap .> white_threshold] .= false
 end    
 
 
@@ -76,9 +82,9 @@ end
 
 
 begin
-    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
+    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = AbsolutePenaltyMap(NPM, MaxDistance{2}()))
     properties = (
-        pathfinder = pathfinder,
+        pathfinderPM = pathfinderPM,
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
@@ -110,9 +116,9 @@ function agent_step!(person, model)
         speed = 0.0
     end
 
-    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
+    #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    move_along_route!(person, model, model.pathfinder, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed, dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -140,9 +146,30 @@ for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
-    pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+    
+    # Keep trying to find a valid spawn position that is walkable (not in black areas)
+    max_attempts = 1000
+    attempts = 0
+    pos = nothing
+    while attempts < max_attempts
+        candidate_pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+        pos_int = floor.(Int, candidate_pos)
+        # Check if position is within bounds and walkable
+        if 1 <= pos_int[1] <= size(walkmap, 1) && 1 <= pos_int[2] <= size(walkmap, 2) && walkmap[pos_int[1], pos_int[2]]
+            pos = candidate_pos
+            break
+        end
+        attempts += 1
+    end
+    
+    # If we couldn't find a valid position after max_attempts, skip this agent
+    if pos === nothing
+        println("Warning: Could not find valid spawn position for agent after $max_attempts attempts")
+        continue
+    end
+    
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    plan_best_route!(person, dests, model.pathfinder)
+    plan_best_route!(person, dests, model.pathfinderPM)
 end
 
 
@@ -369,8 +396,12 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         toxicload  = Float64[]
     )
 
+    # -- Determine metric type for filename --
+    metric_type = model.pathfinderPM.cost_metric isa Agents.Pathfinding.PenaltyMap ? "PM" : 
+                   model.pathfinderPM.cost_metric isa Agents.Pathfinding.AbsolutePenaltyMap ? "APM" : "PM"
+    
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO 2/Simulation Results/SCENARIO_2_$(seed).mp4"
+    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(metric_type)_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -403,7 +434,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO 2/Simulation Results/SCENARIO_2_$(seed).csv"
+    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(metric_type)_$(seed).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end

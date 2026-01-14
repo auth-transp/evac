@@ -17,7 +17,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
 
     include("../../Agents/src/Agents.jl")
     using .Agents
-    import .Agents: ABM, Pathfinding, Pathfinding.PenaltyMap, Pathfinding.AStar, Pathfinding.MaxDistance
+    import .Agents: ABM, Pathfinding, Pathfinding.AbsolutePenaltyMap, Pathfinding.AStar, Pathfinding.MaxDistance
 end       
 
 
@@ -38,6 +38,7 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps 
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
+    heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
 
     # --- Load all concentration maps 1..10 as Float64 arrays ---
     const NUM_CMS = 10
@@ -65,7 +66,7 @@ NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 10                                                       # Define the n_agents variable as 3
+    n_agents = 100                                                       # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -75,6 +76,12 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
     dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
+    
+    # Set walkmap to false in white areas of the heightmap (after reversal, white = high values)
+    # White areas are where heightmap value is above threshold (e.g., > 245)
+    # Black and grey areas (low to medium values) remain walkable
+    white_threshold = 245
+    walkmap[heightmap .> white_threshold] .= false
 end    
 
 
@@ -90,9 +97,11 @@ end
 
 
 begin
-    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM_int, MaxDistance{2}()))
+    cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
+    cost_metric_str = "AbsolutePenaltyMap_MaxDistance2"
+    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     properties = (
-        pathfinder = pathfinder,
+        pathfinderPM = pathfinderPM,
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
@@ -126,7 +135,7 @@ function agent_step!(person, model)
 
     display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    move_along_route!(person, model, model.pathfinder, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed, dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -154,9 +163,30 @@ for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
-    pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+    
+    # Keep trying to find a valid spawn position that is walkable (not in white/black areas)
+    max_attempts = 1000
+    attempts = 0
+    pos = nothing
+    while attempts < max_attempts
+        candidate_pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+        pos_int = floor.(Int, candidate_pos)
+        # Check if position is within bounds and walkable
+        if 1 <= pos_int[1] <= size(walkmap, 1) && 1 <= pos_int[2] <= size(walkmap, 2) && walkmap[pos_int[1], pos_int[2]]
+            pos = candidate_pos
+            break
+        end
+        attempts += 1
+    end
+    
+    # If we couldn't find a valid position after max_attempts, skip this agent
+    if pos === nothing
+        println("Warning: Could not find valid walkable spawn position for agent in Scenario 3 after $max_attempts attempts")
+        continue
+    end
+    
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    plan_best_route!(person, dests, model.pathfinder)
+    plan_best_route!(person, dests, model.pathfinderPM)
 end
 end
 
@@ -318,7 +348,7 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
 end
 
 
-begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
+@time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 600
 frames_per_map = 60
 const NUM_MAPS = 10
@@ -385,8 +415,8 @@ const NUM_MAPS = 10
     )
 
 
-video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed).mp4"
-csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed).csv"  # added
+video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).mp4"
+csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).csv"  # added
 
 # keep a variable for the currently active map index
 current_map_idx = 1
@@ -410,15 +440,19 @@ record(fig, video_file, 1:T; framerate=30) do frame
         NPM = heightmap .+ penalty_map
         NPM_int = round.(Int, NPM)
 
-        # recreate the global pathfinder (do not try to set model.pathfinder)
-        global pathfinder
-        pathfinder = AStar(space;
-            walkmap     = walkmap,
-            cost_metric = PenaltyMap(NPM_int, MaxDistance{2}()))
+        # recreate the cost_metric_obj with the new NPM_int
+        global cost_metric_obj
+        cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
 
-        # replan for all agents using the new global pathfinder
+        # recreate the global pathfinderPM (do not try to set model.pathfinderPM)
+        global pathfinderPM
+        pathfinderPM = AStar(space;
+            walkmap     = walkmap,
+            cost_metric = cost_metric_obj)
+
+        # replan for all agents using the new global pathfinderPM
         for a in allagents(model)
-            plan_best_route!(a, model.goal, pathfinder)
+            plan_best_route!(a, model.goal, pathfinderPM)
         end
 
         # optional: print/log
@@ -462,10 +496,11 @@ begin
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *_tl_agents_*.csv
-        csvs = filter(f -> occursin(r"^AStar_SCENARIO_3_.*\.csv$", f), readdir(folder))
+        pattern = Regex("^AStar_SCENARIO_3_.*_$(cost_metric_str)\\.csv\$")
+        csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *AStar_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
         latest_idx = argmax(getfield.(stats, :mtime))
@@ -554,7 +589,7 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "AStar_SCENARIO_3_hist__$(n_agents)_$(seed_str).mp4")
+    out_file = joinpath(folder, "AStar_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])

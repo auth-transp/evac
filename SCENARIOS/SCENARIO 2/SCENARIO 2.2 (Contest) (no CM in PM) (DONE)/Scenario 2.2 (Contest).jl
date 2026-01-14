@@ -38,7 +38,7 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
 
     # Φόρτωση penalty maps
-    penalty_map_data = load("Penalty Map/6.bmp")
+    penalty_map_data = load("Concentration Map/6.bmp")
     penalty_map_data = permutedims(channelview(penalty_map_data), [2,3,1])[:,:,1]
     global penalty_map = floor.(Int, convert.(Float64, penalty_map_data) * 500)
 end
@@ -59,7 +59,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a larger range of values from the heightmap array # [2] stands for the 2nd row
     MW = 34 #Molecular weight of H2S in g/mol
-    dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    dims = (size(heightmap))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
 end    
 
@@ -72,13 +72,13 @@ end
 
     ## Note that the dimensions of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
-    space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
+    space = ContinuousSpace(size(heightmap); periodic = false, spacing = 1)
 
 
 begin
-    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
+    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
     properties = (
-        pathfinder = pathfinder,
+        pathfinderPM = pathfinderPM,
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
@@ -112,7 +112,7 @@ function agent_step!(person, model)
 
     display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    move_along_route!(person, model, model.pathfinder, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed, dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -141,7 +141,7 @@ for _ in 1:n_agents
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
     pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    plan_best_route!(person, dests, model.pathfinder)
+    plan_best_route!(person, dests, model.pathfinderPM)
 end
 
 
@@ -312,7 +312,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
-    heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
+    heatmap!(ax, NPM; colormap=:grays, alpha=0.3)
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),
@@ -369,7 +369,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO 2.1 (Contest) (DONE)/Simulation Results/SCENARIO_2.1_$(seed).mp4"
+    video_file = "SCENARIO 2.2 (Contest) (no CM in PM) (DONE)/Simulation Results/SCENARIO_2.2_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -402,9 +402,9 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO 2.1 (Contest) (DONE)/Simulation Results/SCENARIO_2.1_$(seed).csv"
+    csv_file = "SCENARIO 2.2 (Contest) (no CM in PM) (DONE)/Simulation Results/SCENARIO_2.2_$(seed).csv"
     CSV.write(csv_file, df)
-    CSV.write(joinpath("SCENARIO 2.1 (Contest) (DONE)", "Simulation Results", "SCENARIO_2.1_tl_agents_$(seed).csv"),
+    CSV.write(joinpath("SCENARIO 2.2 (Contest) (no CM in PM) (DONE)", "Simulation Results", "SCENARIO_2.2_tl_agents_$(seed).csv"),
           select(df, [:step, :agent_id, :toxicload]))
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end

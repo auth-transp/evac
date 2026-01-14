@@ -1,5 +1,6 @@
 begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
+    using Agents.Pathfinding
     using Random                        
     using ColorTypes                      
     using ImageMagick                 
@@ -12,14 +13,9 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using DelimitedFiles
     using Observables
     using Makie
-    using CSV                         
+    using CSV
+end                          
 
-    local_pf = joinpath(@__DIR__, "Pathfinding", "pathfinding.jl")
-    include(local_pf)
-    using .Pathfindinger: Dlite, PenaltyMap, MaxDistance,
-                      plan_best_route!, plan_route!, move_along_route!,
-                      penaltymap, to_discrete_position, dl_initialize!
-end
 
 @agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
     age::Float64
@@ -36,105 +32,41 @@ end
 begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
 
     # heightmap
-    heightmap_data = load("Maps/Qatargas Map.jpg")
+    heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
+    heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
 
     # Φόρτωση penalty maps
-    penalty_dir = joinpath("Penalty Map")   # cross-platform safe path
-    penalty_files = sort(readdir(penalty_dir))
-    @assert !isempty(penalty_files) "Δεν βρέθηκαν penalty maps στον φάκελο $penalty_dir"
-
-    penalty_images = [load(joinpath(penalty_dir, f)) for f in penalty_files]
-
-    # Μετατροπή κάθε εικόνας σε matrix grayscale και ίδια κλίμακα όπως προηγουμένως (.*500)
-    global penalty_maps = [
-        begin
-            img = permutedims(channelview(pi), [2,3,1])[:,:,1]
-            floor.(Int, convert.(Float64, img .* 500))
-        end for pi in penalty_images
-    ]
-
-    # Έλεγχος ομοιότητας διαστάσεων με heightmap
-    for pm in penalty_maps
-        @assert size(pm) == size(heightmap) "Penalty map size does not match heightmap size"
-    end
-
-    global n_penalties = length(penalty_maps)
-    global current_penalty = 1
-    global global_penalty_map = deepcopy(penalty_maps[current_penalty])
-
-    # --- Helpers για αλλαγές χάρτη ---
-    function get_changed_nodes(oldmap::AbstractMatrix{<:Number}, newmap::AbstractMatrix{<:Number})
-        changed = Tuple{Int,Int}[]
-        @inbounds for i in axes(oldmap,1), j in axes(oldmap,2)
-            if oldmap[i,j] != newmap[i,j]
-                push!(changed, (i,j))
-            end
-        end
-        return changed
-    end
-
-    # χρονισμός: κάθε 120 s αλλάζει penalty map
-    global sim_time = 0.0
-    global penalty_interval = 120.0
-    global next_penalty_time = penalty_interval
-
-    # apply_penalty_index! : εφαρμόζει την penalty map με index idx
-    function apply_penalty_index!(model, idx::Integer)
-        @assert 1 <= idx <= n_penalties "Penalty index out of range"
-        global global_penalty_map
-
-        oldmap = deepcopy(global_penalty_map)
-        newmap = penalty_maps[idx]
-        global_penalty_map = deepcopy(newmap)
-
-        # Ενημέρωση pathfinder.penalty_map (αν υπάρχει ήδη model και pathfinder)
-        try
-            if isdefined(model, :properties) && haskey(model.properties, :pathfinderPM)
-                pf = model.properties[:pathfinderPM]
-                pf.cost_metric.pmap .= newmap
-            end
-        catch e
-            @warn "Δεν κατέστη δυνατό να ενημερωθεί το pathfinder.penalty_map: $e"
-        end
-
-        # (προαιρετικό) επιστρέφουμε τη λίστα με changed nodes για περαιτέρω χρήσεις
-        return get_changed_nodes(oldmap, newmap)
-    end
-
-    # maybe_update_penalty! : καλείται μέσα στο simulation loop με dt
-    function maybe_update_penalty!(model, dt)
-        global sim_time, next_penalty_time, current_penalty
-        sim_time += dt
-        if sim_time >= next_penalty_time
-            next_penalty_time += penalty_interval
-            current_penalty = (current_penalty % n_penalties) + 1
-            @info "Switching to penalty map $current_penalty at sim_time=$(sim_time)s"
-            changed = apply_penalty_index!(model, current_penalty)
-            return changed
-        end
-        return Tuple{Int,Int}[]
-    end
-
-    # ΣΗΜΕΙΩΣΗ: μετά τη δημιουργία του `model` κάλεσε μία φορά apply_penalty_index!(model, current_penalty) ώστε ο pathfinder να είναι συγχρονισμένος με την αρχική penalty map.
+    penalty_map = load("Concentration Maps/6.bmp")
+    penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
+    global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
+    
+    # Check dimension consistency
+    @assert size(penalty_map) == size(heightmap) "penalty_map dimensions $(size(penalty_map)) do not match heightmap dimensions $(size(heightmap))"
 end
 
+NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 3                                                        # Define the n_agents variable as 3
+    n_agents = 50                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
     speed = 5.                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
-    ag_range_y = (size(heightmap)[1]/2-50):(size(heightmap)[1]/2+50)    # Define the ag_range_y variable as a range of values from the heightmap array # [1] stands for the 1st row
-    ag_range_x = (size(heightmap)[2]/2-50):(size(heightmap)[2]/2+50)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
-    MW = 34 #Molecular weight of H2S in g/mol
-    dims = (size(heightmap))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
+    ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
+    dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
+    
+    # Set walkmap to false in white areas of the heightmap (after reversal, white = high values)
+    # White areas are where heightmap value is above threshold (e.g., > 245)
+    # Black and grey areas (low to medium values) remain walkable
+    white_threshold = 245
+    walkmap[heightmap .> white_threshold] .= false
 end    
 
 
@@ -146,23 +78,26 @@ end
 
     ## Note that the dimensions of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
-    space = ContinuousSpace(size(heightmap); periodic = false, spacing = 1)
+    space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
 
-pathfinderPM = Pathfindinger.Dlite(space; walkmap = walkmap, cost_metric = Pathfindinger.PenaltyMap(global_penalty_map, Pathfindinger.MaxDistance{2}()))
+begin
+    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
+    properties = (
+        pathfinder = pathfinder,
+        heightmap = heightmap,
+        dt = dt,
+        speed_range = speed_range,
+        goal = dests
+    )
+end
 
-properties = (
-    pathfinderPM=pathfinderPM, 
-    heightmap=heightmap, 
-    dt=dt,
-    speed_range=speed_range,
-    goal=dests
-)
+
 
 function agent_step!(person, model)
     position = floor.(Int, person.pos)
    # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
-    Ct = global_penalty_map[position[1], position[2]]
+    Ct = penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, dt)
 
@@ -181,99 +116,13 @@ function agent_step!(person, model)
         speed = 0.0
     end
 
-    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
+    #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    Pathfindinger.move_along_route!(person, model, model.pathfinderPM, speed, dt)  # τώρα ταιριάζει στον Dlite
+    move_along_route!(person, model, model.pathfinder, speed, dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
 
-
-# --- Plan route to one dest with D*Lite (continuous) ---
-function plan_route_dlite!(agent, dest, pf::Pathfindinger.Dlite)
-    sstart = Tuple(to_discrete_position(agent.pos, pf))
-    sgoal  = Tuple(to_discrete_position(dest, pf))
-    # init & compute
-    dl_initialize!(pf, sstart, sgoal)
-    dpath = Pathfindinger.dl_move_and_replan!(pf, sstart, sgoal)  # Vector{NTuple{D,Int}}
-
-    # αν δεν βρέθηκε διαδρομή
-    isempty(dpath) && return
-
-    # Μετατροπή σε continuous waypoints (ίδιο με λογική A* continuous)
-    cts_path = Pathfindinger.Path{2,Float64}()   # D=2 στο σενάριό σου
-    for p in dpath
-        push!(cts_path, to_continuous_position(p, pf))
-    end
-    pf.agent_paths[agent.id] = cts_path
-    return dest
-end
-
-# --- Επιλογή “καλύτερου” προορισμού (shortest/longest) όπως πριν ---
-function plan_best_route_dlite!(agent, dests, pf::Pathfindinger.Dlite; condition::Symbol=:shortest)
-    @assert condition ∈ (:shortest, :longest)
-    cmp = condition == :shortest ? (<) : (>)
-    best_dest = nothing; best_len = nothing; best_path = nothing
-    for d in dests
-        sstart = Tuple(to_discrete_position(agent.pos, pf))
-        sgoal  = Tuple(to_discrete_position(d, pf))
-        Pathfindinger.dl_initialize!(pf, sstart, sgoal)
-        dpath = Pathfindinger.dl_move_and_replan!(pf, sstart, sgoal)
-        isempty(dpath) && continue
-        L = length(dpath)
-        if isnothing(best_len) || cmp(L, best_len)
-            best_len, best_dest, best_path = L, d, dpath
-        end
-    end
-    isnothing(best_dest) && return
-    cts = Pathfindinger.Path{2,Float64}()
-    for p in best_path
-        push!(cts, to_continuous_position(p, pf))
-    end
-    pf.agent_paths[agent.id] = cts
-    return best_dest
-end
-
-# --- Move along route! για ContinuousSpace με Dlite (ίδιο σώμα με A* continuous) ---
-function Pathfindinger.move_along_route!(agent,
-                           model::ABM{<:ContinuousSpace{D}},
-                           pf::Pathfindinger.Dlite{D},
-                           speed::Float64,
-                           dt::Real=1.0) where {D}
-    # αν δεν έχει path, μείνε στάσιμος
-    (!haskey(pf.agent_paths, agent.id) || isempty(pf.agent_paths[agent.id])) && return
-    from = agent.pos
-    next_pos = agent.pos
-    T = typeof(agent.pos)
-    while true
-        next_waypoint = T(first(pf.agent_paths[agent.id]))
-        dir = get_direction(from, next_waypoint, model)
-        dist_to_target = norm(dir)
-        if dist_to_target ≈ 0.
-            from = next_waypoint
-            popfirst!(pf.agent_paths[agent.id])
-            if !haskey(pf.agent_paths, agent.id) || isempty(pf.agent_paths[agent.id])
-                next_pos = next_waypoint; break
-            end
-            continue
-        end
-        dir = dir ./ dist_to_target
-        next_pos = from .+ dir .* (speed * dt)
-        next_pos = Agents.normalize_position(T(next_pos), model)
-        dist_to_next = euclidean_distance(T(from), T(next_pos), model)
-        if dist_to_next > dist_to_target
-            from = next_waypoint
-            dt -= dist_to_target / speed
-            popfirst!(pf.agent_paths[agent.id])
-            if !haskey(pf.agent_paths, agent.id) || isempty(pf.agent_paths[agent.id])
-                next_pos = next_waypoint; break
-            end
-        else
-            break
-        end
-    end
-    move_agent!(agent, T(next_pos), model)
-end
 
 
 function model_step!(model)
@@ -291,15 +140,36 @@ model = ABM(
   agent_step!  = agent_step!,
   model_step!  = model_step!
 )
-apply_penalty_index!(model, current_penalty)
-    
+
+
 for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
-    pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+    
+    # Keep trying to find a valid spawn position that is walkable (not in black areas)
+    max_attempts = 1000
+    attempts = 0
+    pos = nothing
+    while attempts < max_attempts
+        candidate_pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+        pos_int = floor.(Int, candidate_pos)
+        # Check if position is within bounds and walkable
+        if 1 <= pos_int[1] <= size(walkmap, 1) && 1 <= pos_int[2] <= size(walkmap, 2) && walkmap[pos_int[1], pos_int[2]]
+            pos = candidate_pos
+            break
+        end
+        attempts += 1
+    end
+    
+    # If we couldn't find a valid position after max_attempts, skip this agent
+    if pos === nothing
+        println("Warning: Could not find valid spawn position for agent after $max_attempts attempts")
+        continue
+    end
+    
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    plan_best_route_dlite!(person, dests, model.pathfinderPM)  # ← εδώ γίνεται το initialize με το σωστό start/goal
+    plan_best_route!(person, dests, model.pathfinder)
 end
 
 
@@ -310,7 +180,7 @@ function setupToxic()                                               # Define the
     Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]                   # Define the Arho array for the first row and columns 2 to 6                # odor
     Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]         # Define the Arho array for the second row and columns 2 to 6               # irritation
     Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm    # Define the Arho array for the third row and columns 2 to 6                # edema
-    MW = 34 #Molecular Weight of H2S
+    MW = 34 #Molecular weight of H2S in g/mol
     Arho *= MW/24.04 #mg/m^3                                        # Multiply the Arho array by the molecular weight of H2S divided by 24.04
     Arho = Arho'                                                    # Transpose the Arho array 
     Atime = Atime*60 #seconds                                       # Multiply the Atime array by 60 seconds to convert to seconds              
@@ -462,7 +332,7 @@ end
 
 
 begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 1200
+    const T = 400
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
@@ -470,7 +340,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
-    heatmap!(ax, penaltymap(model.pathfinderPM); colormap=:grays, alpha=0.3)
+    heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),
@@ -527,12 +397,11 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO_DUMMY/Simulation Results/SCENARIO_DUMMY_$(seed).mp4"
+    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
         # 2) βήμα προσομοίωσης
-        maybe_update_penalty!(model, dt)
         step!(model, agent_step!, model_step!, 1)
 
         # 3) ενημέρωση των trails
@@ -561,7 +430,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO_DUMMY/Simulation Results/SCENARIO_DUMMY_$(seed).csv"
+    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(seed).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end

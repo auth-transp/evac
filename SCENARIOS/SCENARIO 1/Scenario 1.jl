@@ -68,9 +68,9 @@ end
 
 
 begin
-    pathfinder = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(heightmap, MaxDistance{2}()))
+    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(heightmap, MaxDistance{2}()))
     properties = (
-        pathfinder = pathfinder,
+        pathfinderPM = pathfinderPM,
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
@@ -104,7 +104,7 @@ function agent_step!(person, model)
 
     display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    move_along_route!(person, model, model.pathfinder, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed, dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -134,7 +134,7 @@ for _ in 1:n_agents
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
     pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    plan_best_route!(person, dests, model.pathfinder)
+    plan_best_route!(person, dests, model.pathfinderPM)
 end
 
 
@@ -305,7 +305,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
-    heatmap!(ax, penaltymap(model.pathfinder); colormap=:grays, alpha=0.3)
+    heatmap!(ax, penaltymap(model.pathfinderPM); colormap=:grays, alpha=0.3)
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),

@@ -1,0 +1,198 @@
+============================================================
+STEP 1: Setting up the grid environment
+============================================================
+  → Creating grid
+    Size: (5, 5)
+  → Creating walkmap
+    Obstacle at (3,3)
+
+Grid Layout (X = obstacle, . = walkable):
+ .  .  .  .  . 
+ .  .  .  .  . 
+ .  .  X  .  . 
+ .  .  .  .  . 
+ .  .  .  .  . 
+
+============================================================
+STEP 2: Creating D* Lite pathfinder
+============================================================
+  → Calling DStarLite constructor
+    dims=(5, 5), diagonal_movement=true
+  [Pathfinder created] = DStarLite{2, false, true, Int64, DirectDistance{2}}
+  [Walkmap size] = (5, 5)
+  [Neighborhood size] = 8
+============================================================
+STEP 3: Defining start and goal positions
+============================================================
+  [Start position] = (1, 1)
+  [Goal position] = (5, 5)
+  → Checking walkability
+    Start: true, Goal: true
+============================================================
+STEP 4: Planning route using D* Lite find_path function
+============================================================
+  → Agent created
+    ID: 1, Position: (1, 1)
+  → Calling plan_route!
+    Agent ID: 1, Destination: (5, 5)
+
+────────────────────────────────────────────────────────────
+SEQUENCE OF FUNCTION CALLS:
+────────────────────────────────────────────────────────────
+1. plan_route!(agent, goal_pos, pathfinder)
+   └─> Calls: find_path(pathfinder, agent.pos, goal_pos)
+       └─> Inside find_path() [Line 141-287 in dstar_lite.jl]
+
+EXECUTION SEQUENCE IN find_path():
+────────────────────────────────────────────────────────────
+Line 141-147: Checking bounds and walkability
+  ✓ Start (1, 1) is walkable: true
+  ✓ Goal (5, 5) is walkable: true
+
+Line 151-152: Initializing data structures
+  → g = Dict{Dims{2},Float64}()  # g-values (cost from goal)
+  → rhs = Dict{Dims{2},Float64}()  # rhs-values (one-step lookahead)
+
+Line 154-156: Setting start, goal, and km
+  → s_start = (1, 1)
+  → s_goal = (5, 5)
+  → km = 0.0
+
+Line 158: Creating priority queue U
+  → U = PriorityQueue{Dims{2},Tuple{Float64,Float64}}()
+
+Line 160-163: Defining helper functions
+  → getg(s) = get(g, s, Inf)
+  → getrhs(s) = get(rhs, s, Inf)
+  → setg!(s, v) = (g[s] = v)
+  → setrhs!(s, v) = (rhs[s] = v)
+
+Line 165: Defining heuristic function
+  → h(s) = delta_cost(pathfinder, s, s_start)
+
+Line 167-172: Defining calc_key function
+  → calc_key(s) = (min(g[s], rhs[s]) + h(s) + km, min(g[s], rhs[s]))
+
+Line 177-198: Defining update_vertex! function
+  → Updates rhs(u) from neighbors if u ≠ goal
+  → Removes/reinserts u in queue if inconsistent
+
+Line 201-202: INITIALIZATION
+  → rhs(s_goal) = 0.0
+  → U[s_goal] = calc_key(s_goal)
+  → Queue now contains: goal position (5, 5)
+
+Line 215-257: compute_shortest_path!() - MAIN D* LITE LOOP
+  This function will:
+    - Process vertices from priority queue
+    - Update g and rhs values
+    - Propagate changes to neighbors
+    - Continue until start is consistent
+
+────────────────────────────────────────────────────────────
+CALLING plan_route!() WHICH INTERNALLY CALLS find_path()...
+────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────
+PATH RECONSTRUCTION (Lines 265-286):
+────────────────────────────────────────────────────────────
+Line 259: compute_shortest_path!() completed
+Line 261-263: Checking if path exists
+  → Path was successfully computed
+
+Line 265-286: Building path using greedy approach
+  Algorithm:
+    1. Start at s_start
+    2. For each step, choose neighbor with minimum (cost + g(neighbor))
+    3. Continue until reaching s_goal
+
+  [Path found] = Length: 5
+Complete path from (1, 1) to (5, 5):
+  (1, 1) → (2, 1) → (3, 2) → (4, 3) → (4, 4) → (5, 5)
+
+Line 287: Returning path
+============================================================
+STEP 5: Path stored by plan_route!
+============================================================
+  → plan_route! - Line 296-304
+    Path already stored in pathfinder.agent_paths[1]
+  [Path stored] = Agent 1 has path of length 5
+============================================================
+STEP 6: Moving agent along route step by step
+============================================================
+
+Moving agent along route:
+  → move_along_route! - Line 343-351
+    Step 1: Moving from (1, 1)
+  [New position] = (2, 1)
+  [Remaining path length] = 4
+  → move_along_route! - Line 343-351
+    Step 2: Moving from (2, 1)
+  [New position] = (3, 2)
+  [Remaining path length] = 3
+  → move_along_route! - Line 343-351
+    Step 3: Moving from (3, 2)
+  [New position] = (4, 3)
+  [Remaining path length] = 2
+  → move_along_route! - Line 343-351
+    Step 4: Moving from (4, 3)
+  [New position] = (4, 4)
+  [Remaining path length] = 1
+  → move_along_route! - Line 343-351
+    Step 5: Moving from (4, 4)
+  [New position] = (5, 5)
+  [Remaining path length] = 0
+
+✅ Agent successfully reached the goal!
+
+============================================================
+EXECUTION SUMMARY - SEQUENCE OF EVENTS
+============================================================
+
+FUNCTION CALL SEQUENCE:
+────────────────────────────────────────────────────────────
+1. DStarLite() constructor [dstar_lite.jl:45-62]
+   → Creates pathfinder with walkmap, cost_metric, neighborhood
+
+2. plan_route!(agent, goal_pos, pathfinder) [dstar_lite.jl:296-304]
+   └─> Calls: find_path(pathfinder, agent.pos, goal_pos)
+
+3. find_path() [dstar_lite.jl:141-287] - MAIN ALGORITHM
+   ├─> Line 143-147: Validate start/goal positions
+   ├─> Line 151-156: Initialize g, rhs, s_start, s_goal, km
+   ├─> Line 158: Create priority queue U
+   ├─> Line 160-165: Define helper functions (getg, getrhs, h)
+   ├─> Line 167-172: Define calc_key function
+   ├─> Line 177-198: Define update_vertex! function
+   ├─> Line 201-202: Initialize rhs(goal)=0, add goal to queue
+   ├─> Line 215-257: compute_shortest_path!() - MAIN LOOP
+   │   ├─> While queue not empty and start inconsistent:
+   │   ├─>   Dequeue vertex u with minimum key
+   │   ├─>   If key changed: reinsert with new key
+   │   ├─>   If g(u) > rhs(u): set g(u) = rhs(u), update neighbors
+   │   └─>   Else: set g(u) = Inf, update u and neighbors
+   ├─> Line 261-263: Check if path exists
+   └─> Line 265-286: Reconstruct path (greedy walk)
+
+4. move_along_route!(agent, model, pathfinder) [dstar_lite.jl:343-351]
+   ├─> Line 348: Check if path exists
+   ├─> Line 349: Move agent to first position in path
+   └─> Line 350: Remove first position from path
+
+KEY D* LITE CONCEPTS:
+────────────────────────────────────────────────────────────
+  • g(s): Cost from goal to s (computed)
+  • rhs(s): One-step lookahead cost (rhs(s) = min over neighbors)
+  • Vertex is 'consistent' when g(s) == rhs(s)
+  • Priority queue orders vertices by key = (min(g,rhs) + h + km, min(g,rhs))
+  • Algorithm processes inconsistent vertices until start is consistent
+
+FILE LOCATIONS:
+────────────────────────────────────────────────────────────
+  Main implementation: Agents/src/submodules/pathfinding/dstar_lite.jl
+  Grid-specific: Agents/src/submodules/pathfinding/dstar_lite_grid.jl
+
+
+Test completed successfully! ✓
+
+Output saved to: dstar_lite_test_output.txt
