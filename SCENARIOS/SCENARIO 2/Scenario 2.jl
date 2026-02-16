@@ -17,6 +17,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
 end                          
 
 
+
 @agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
     age::Float64
     mass::Float64
@@ -28,7 +29,7 @@ end
     TL3::Vector{Float64}
 end
 
-
+    
 begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
 
     # heightmap
@@ -82,7 +83,7 @@ end
 
 
 begin
-    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = AbsolutePenaltyMap(NPM, MaxDistance{2}()))
+    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
     properties = (
         pathfinderPM = pathfinderPM,
         heightmap = heightmap,
@@ -142,7 +143,8 @@ model = ABM(
 )
 
 
-for _ in 1:n_agents
+@time begin 
+    for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
@@ -171,7 +173,7 @@ for _ in 1:n_agents
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
     plan_best_route!(person, dests, model.pathfinderPM)
 end
-
+end
 
 
 function setupToxic()                                               # Define the setupToxic function
@@ -331,8 +333,8 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
 end
 
 
-begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 400
+@time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
+    T = 600
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
@@ -341,6 +343,10 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
                aspect = DataAspect())
 
     heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
+    
+    # --- Concentration Map visualization (contour only, overlay on heightmap) ---
+    contour!(ax, penalty_map; colormap=:hot, levels=10, linewidth=1.5, alpha=0.7)
+    
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),
@@ -396,12 +402,8 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         toxicload  = Float64[]
     )
 
-    # -- Determine metric type for filename --
-    metric_type = model.pathfinderPM.cost_metric isa Agents.Pathfinding.PenaltyMap ? "PM" : 
-                   model.pathfinderPM.cost_metric isa Agents.Pathfinding.AbsolutePenaltyMap ? "APM" : "PM"
-    
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(metric_type)_$(seed).mp4"
+    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -434,7 +436,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(metric_type)_$(seed).csv"
+    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end

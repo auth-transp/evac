@@ -1,23 +1,17 @@
 begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
+    using Agents
+    using Agents.Pathfinding
     using CSV
     using CairoMakie
-    using ColorTypes
     using DataFrames
-    using DelimitedFiles
     using FileIO: load
     using ImageMagick
     using Images
     using InteractiveDynamics
     using Makie
     using Observables
-    using Pkg
     using Random
-    using Statistics
     using StaticArrays
-
-    include("../../Agents/src/Agents.jl")
-    using .Agents
-    import .Agents: ABM, Pathfinding, Pathfinding.AbsolutePenaltyMap, Pathfinding.AStar, Pathfinding.MaxDistance
 end       
 
 
@@ -105,10 +99,9 @@ begin
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
-        goal = dests
+        goal = dests,
     )
 end
-
 
 
 function agent_step!(person, model)
@@ -133,8 +126,6 @@ function agent_step!(person, model)
         speed = 0.0
     end
 
-    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
-
     move_along_route!(person, model, model.pathfinderPM, speed, dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
@@ -148,7 +139,6 @@ function model_step!(model)
     end
 end
 
-
 model = ABM(
   AgentEscapes,
   space;
@@ -158,7 +148,11 @@ model = ABM(
   model_step!  = model_step!
 )
 
-@time begin
+# ===== PATHFINDING TIMING STARTS HERE =====
+# Separate timing for pathfinding operations (outside simulation loop)
+initial_pathfinding_time = 0.0
+
+# Add agents (agent creation is NOT timed - only pathfinding operations are timed)
 for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
@@ -186,9 +180,12 @@ for _ in 1:n_agents
     end
     
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    plan_best_route!(person, dests, model.pathfinderPM)
+    
+    # Time only the pathfinding operation (initial planning)
+    initial_pathfinding_time += @elapsed plan_best_route!(person, dests, model.pathfinderPM)
 end
-end
+
+println("Initial pathfinding time (outside simulation loop): $(round(initial_pathfinding_time; digits=4)) s")
 
 
 function setupToxic()                                               # Define the setupToxic function
@@ -359,6 +356,11 @@ const NUM_MAPS = 10
                aspect = DataAspect())
 
     heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
+    
+    # --- Concentration Map visualization (contour only, overlay on heightmap) ---
+    cm_obs = Observable(penalty_map)
+    cm_contour = contour!(ax, cm_obs; colormap=:hot, levels=10, linewidth=1.5, alpha=0.7)
+    
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),
@@ -421,43 +423,48 @@ csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agent
 # keep a variable for the currently active map index
 current_map_idx = 1
 
+# Track pathfinding time during simulation (inside record loop)
+replanning_time = 0.0
+
 record(fig, video_file, 1:T; framerate=30) do frame
     # update frame counter observable
     frame_obs[] = frame
 
     # 1) step the model normally
-    step!(model, agent_step!, model_step!, 1)
+    step!(model, 1)
 
     # 2) determine which CM index should be active on this frame
-    global current_map_idx  # Declare `current_map_idx` as global
+    global current_map_idx, replanning_time  # Declare as global
     new_idx = min(NUM_MAPS, Int(ceil(frame / frames_per_map)))
     if new_idx != current_map_idx
-        # instant swap of penalty_map
         current_map_idx = new_idx
-        penalty_map .= cm_list[current_map_idx]   # in-place replace values
 
-        # recompute combined penalty map
-        NPM = heightmap .+ penalty_map
-        NPM_int = round.(Int, NPM)
+        # --- PATHFINDING TIMING: Replanning triggered by concentration map change (INSIDE simulation loop) ---
+        # Only time pathfinding operations: updating penalty map, updating pathfinder, and replanning paths
+        replanning_time += @elapsed begin
+            # 1) swap global concentration map used by agent_step! (preprocessing for pathfinding)
+            penalty_map .= cm_list[current_map_idx]   # in-place replace values
 
-        # recreate the cost_metric_obj with the new NPM_int
-        global cost_metric_obj
-        cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
+            # 2) recompute combined penalty map for pathfinding (preprocessing)
+            NPM = heightmap .+ penalty_map
+            NPM_int = round.(Int, NPM)
 
-        # recreate the global pathfinderPM (do not try to set model.pathfinderPM)
-        global pathfinderPM
-        pathfinderPM = AStar(space;
-            walkmap     = walkmap,
-            cost_metric = cost_metric_obj)
+            # 3) mutate the existing A* pathfinder's internal penalty map in-place (pathfinding state update)
+            pm = Pathfinding.penaltymap(model.pathfinderPM)
+            pm .= NPM_int
 
-        # replan for all agents using the new global pathfinderPM
-        for a in allagents(model)
-            plan_best_route!(a, model.goal, pathfinderPM)
+            # 4) replan for all agents using the updated pathfinder (pathfinding operation)
+            for a in allagents(model)
+                plan_best_route!(a, model.goal, model.pathfinderPM)
+            end
         end
 
         # optional: print/log
-        println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
+        println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths (updated penalty map in-place).")
     end
+
+    # Update concentration map visualization
+    cm_obs[] = penalty_map
 
     # 3) update trails/visuals as before
     for (i, a) in enumerate(allagents(model))
@@ -482,6 +489,15 @@ record(fig, video_file, 1:T; framerate=30) do frame
 
     # 5) stop condition: after map 10 completes (frame == NUM_MAPS*frames_per_map) the record ends automatically
     end
+
+    # ===== PATHFINDING TIMING ENDS HERE =====
+    # Total pathfinding time = initial planning (outside loop) + all replanning (inside loop)
+    total_pathfinding_time = initial_pathfinding_time + replanning_time
+    println("\n=== Pathfinding Timing Summary ===")
+    println("Initial pathfinding time (outside simulation loop): $(round(initial_pathfinding_time; digits=4)) s")
+    println("Replanning time (inside simulation loop): $(round(replanning_time; digits=4)) s")
+    println("Total pathfinding time: $(round(total_pathfinding_time; digits=4)) s")
+    println("===================================\n")
 
     println("Το animation σώθηκε ως $video_file")
     CSV.write(csv_file, df)

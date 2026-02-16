@@ -1,26 +1,19 @@
 begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
+    using Agents
+    using Agents.Pathfinding
     using CSV
     using CairoMakie
-    using ColorTypes
     using DataFrames
-    using DelimitedFiles
     using FileIO: load
     using ImageMagick
     using Images
     using InteractiveDynamics
     using Makie
     using Observables
-    using Pkg
     using Random
-    using Statistics
     using StaticArrays
-
-    include("../../Agents/src/Agents.jl")
-    using .Agents
-    import .Agents: ABM, Pathfinding
-    import .Agents.Pathfinding: AbsolutePenaltyMap, DStarLite, MaxDistance, DStarLitePlanner,
-            init_planner, update_after_cm_change!, extract_path, TerrainHazardMetric
 end       
+
 
 Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
     age::Float64
@@ -99,14 +92,15 @@ end
 
 begin
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "AbsolutePenaltyMap_MaxDistance2"
+    cost_metric_str = "APM"
+    heuristic_code  = "DF"   # DF: default Agents.jl heuristic, EY: Euclidean, MN: Manhattan
     pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     properties = (
         pathfinderPM = pathfinderPM,
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
-        goal = dests
+        goal = dests,
     )
 end
 
@@ -153,8 +147,6 @@ function agent_step!(person, model)
         speed = 0.0
     end
 
-    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
-
     # use the global `pathfinderPM` (do not mutate model properties)
     move_along_precomputed_path!(person, speed, dt)
     push!(person.pathX, person.pos[1])
@@ -168,7 +160,6 @@ function model_step!(model)
         elastic_collision!(a1, a2, :mass)
     end
 end
-
 
 model = ABM(
   AgentEscapes,
@@ -418,6 +409,11 @@ end
                aspect = DataAspect())
 
     heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
+    
+    # --- Concentration Map visualization (contour only, overlay on heightmap) ---
+    cm_obs = Observable(penalty_map)
+    cm_contour = contour!(ax, cm_obs; colormap=:hot, levels=10, linewidth=1.5, alpha=0.7)
+    
     goals = model.goal
     scatter!(ax,
         getindex.(goals,1),
@@ -474,33 +470,36 @@ end
     )
 
 
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).mp4"
-    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).csv"  # added
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code).mp4"
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code).csv"  # added
 
     # keep a variable for the currently active map index
     current_map_idx = 1
+
+    # --- Accumulator for path-planning time only (init + in-loop, summed) ---
+    path_planning_time = Ref(0.0)
 
     # --- INIT D* Lite planners (one per exit) ---
     grid_dims = size(NPM_int)
     exit_cells = [world_to_cell(g, grid_dims) for g in model.goal]
 
+    path_planning_time[] += @elapsed begin
+        global planners
+        planners = [
+            init_planner(pathfinderPM, goal_cell)
+            for goal_cell in exit_cells
+        ]
+        for a in allagents(model)
+            start = world_to_cell(a.pos, grid_dims)
 
-    global planners
-    planners = [
-        init_planner(pathfinderPM, goal_cell)
-        for goal_cell in exit_cells
-    ]
-    for a in allagents(model)
-        start = world_to_cell(a.pos, grid_dims)
+            paths = [extract_path(p, start) for p in planners]
+            a.path = choose_best_path(paths)
 
-        paths = [extract_path(p, start) for p in planners]
-        a.path = choose_best_path(paths)
-
-        # Note: Do NOT update pathX/pathY here - they are the traveled trail,
-        # not the planned path. They are initialized with the starting position
-        # when the agent is created, and will be updated in agent_step! as the agent moves.
+            # Note: Do NOT update pathX/pathY here - they are the traveled trail,
+            # not the planned path. They are initialized with the starting position
+            # when the agent is created, and will be updated in agent_step! as the agent moves.
+        end
     end
-
 
     prev_NPM_int = copy(NPM_int)
 
@@ -510,7 +509,7 @@ end
         frame_obs[] = frame
 
         # 1) step the model normally
-        step!(model, agent_step!, model_step!, 1)
+        step!(model, 1)
 
         # 2) determine which CM index should be active on this frame
         global current_map_idx  # Declare `current_map_idx` as global
@@ -535,25 +534,28 @@ end
             changed_cells = find_changed_cells(prev_NPM_int, NPM_int) # <-- use your existing diff logic
             prev_NPM_int .= NPM_int  
 
-            # --- UPDATE ALL PLANNERS (D* Lite runs HERE, λίγες φορές) ---
-            for planner in planners
-                update_after_cm_change!(planner, changed_cells)
-            end
+            # --- Path planning time: D* Lite update + per-agent path extraction ---
+            path_planning_time[] += @elapsed begin
+                for planner in planners
+                    update_after_cm_change!(planner, changed_cells)
+                end
+                for a in allagents(model)
+                    start = world_to_cell(a.pos, grid_dims)
 
-            # --- PER-AGENT PATH EXTRACTION (cheap) ---
-            for a in allagents(model)
-                start = world_to_cell(a.pos, grid_dims)
+                    paths = [extract_path(p, start) for p in planners]
 
-                paths = [extract_path(p, start) for p in planners]
+                    a.path = choose_best_path(paths)
 
-                a.path = choose_best_path(paths)
-
-                # Note: Do NOT update pathX/pathY here - they are the traveled trail,
-                # not the planned path. They are updated in agent_step! as the agent moves.
+                    # Note: Do NOT update pathX/pathY here - they are the traveled trail,
+                    # not the planned path. They are updated in agent_step! as the agent moves.
+                end
             end
 
             println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
         end
+
+        # Update concentration map visualization
+        cm_obs[] = penalty_map
 
         # 3) update trails/visuals as before
         for (i, a) in enumerate(allagents(model))
@@ -582,6 +584,7 @@ end
     println("Το animation σώθηκε ως $video_file")
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
+    println("Total path planning time (best path only, init + in-loop summed): ", round(path_planning_time[]; digits=6), " s")
 end
 
 
@@ -592,10 +595,10 @@ begin
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
-        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)\\.csv\$")
+        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *DStarLite_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -685,7 +688,7 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str).mp4")
+    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])
