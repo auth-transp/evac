@@ -359,7 +359,13 @@ const NUM_MAPS = 10
     
     # --- Concentration Map visualization (contour only, overlay on heightmap) ---
     cm_obs = Observable(penalty_map)
-    cm_contour = contour!(ax, cm_obs; colormap=:hot, levels=10, linewidth=1.5, alpha=0.7)
+    cm_contour = contour!(
+        ax, cm_obs;
+        colormap = cgrad([:yellow, :orange, :red]),
+        levels = 10,
+        linewidth = 1.5,
+        alpha = 0.7,
+    )
     
     goals = model.goal
     scatter!(ax,

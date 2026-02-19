@@ -40,6 +40,7 @@ include("dstar_lite.jl")
 include("dstar_lite_grid.jl")
 include("dstar_lite_continuous.jl")
 include("id_star_lite.jl")
+include("gaussian_plume.jl")
 
 export CostMetric,
     DirectDistance,
@@ -60,7 +61,8 @@ export CostMetric,
     TerrainHazardMetric,
     IDStarLite,
     IDStarLitePlanner,
-    IDStarLitePlannerHeuristic
+    IDStarLitePlannerHeuristic,
+    gaussian_plume_map
 
 # Deprecations
 @deprecate set_target! plan_route!

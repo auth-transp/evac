@@ -32,7 +32,7 @@ end
 end
 
     
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
+begin   # Φόρτωση του heightmap, static CM και HRZ
 
     # heightmap
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
@@ -40,13 +40,22 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
     heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
 
-    # Φόρτωση penalty maps
-    penalty_map = load("Concentration Maps/6.bmp")
-    penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
-    global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
-    
-    # Check dimension consistency
-    @assert size(penalty_map) == size(heightmap) "penalty_map dimensions $(size(penalty_map)) do not match heightmap dimensions $(size(heightmap))"
+    # --- Static concentration map from 6.bmp (as before) ---
+    base_cm = load("Concentration Maps/6.bmp")
+    base_cm = permutedims(channelview(base_cm), [2,3,1])[:,:,1]
+    base_cm = floor.(Int, convert.(Float64, base_cm) * 500)
+
+    # --- HRZ high-risk zones from HRZ.bmp ---
+    hrz_img = load("Concentration Maps/HRZ.bmp")
+    hrz_img = permutedims(channelview(hrz_img), [2,3,1])[:,:,1]
+    global hrz_map = convert.(Float64, hrz_img)          # 0..1, για contour visualization
+    hrz_penalty = round.(Int, hrz_map .* 500.0)
+
+    @assert size(base_cm) == size(heightmap) "6.bmp dimensions $(size(base_cm)) do not match heightmap $(size(heightmap))"
+    @assert size(hrz_penalty) == size(heightmap) "HRZ.bmp dimensions $(size(hrz_penalty)) do not match heightmap $(size(heightmap))"
+
+    # Συνολικό penalty map: βασικό CM + HRZ
+    global penalty_map = base_cm .+ hrz_penalty
 end
 
 NPM = heightmap .+ penalty_map
@@ -380,7 +389,21 @@ end
     heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
     
     # --- Concentration Map visualization (contour only, overlay on heightmap) ---
-    contour!(ax, penalty_map; colormap=:hot, levels=10, linewidth=1.5, alpha=0.7)
+    contour!(
+        ax, penalty_map;
+        colormap = cgrad([:yellow, :orange, :red]),
+        levels = 10,
+        linewidth = 1.5,
+        alpha = 0.7,
+    )
+
+    # --- HRZ static penalty contour (drawn in red) ---
+    contour!(
+        ax, hrz_map;
+        color = :red,
+        levels = 12,
+        linewidth = 1.5,
+    )
     
     goals = model.goal
     scatter!(ax,
