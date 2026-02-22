@@ -65,8 +65,8 @@ dests = [(600., 980.), (100., 200.)]
 space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
 begin
-    cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "APM"
+    cost_metric_obj = PenaltyMap(NPM_int, MaxDistance{2}())
+    cost_metric_str = "PM"
     heuristic_code  = "DF"
     pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     properties = (
@@ -303,7 +303,7 @@ function run_one_benchmark()
     rng_run = MersenneTwister(seed)
 
     local_NPM_int = copy(NPM_int)
-    local_cost_metric_obj = AbsolutePenaltyMap(local_NPM_int, MaxDistance{2}())
+    local_cost_metric_obj = PenaltyMap(local_NPM_int, MaxDistance{2}())
     local_pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = local_cost_metric_obj)
     local_properties = (
         pathfinderPM = local_pathfinderPM,

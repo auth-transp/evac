@@ -52,7 +52,7 @@ NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
-    n_agents = 75                                                        # Define the n_agents variable as 3
+    n_agents = 5                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -137,8 +137,9 @@ const BENCHMARK_MIN_RUNS = 50            # run at least this many times before c
 const BENCHMARK_T_STEPS = 600
 
 """
-    run_one_benchmark() -> (pathfinding_time_seconds, simulation_time_seconds, seed)
+    run_one_benchmark() -> (pathfinding_time_seconds, simulation_time_seconds, total_tl, seed)
 Build a fresh model with a random seed, add agents (timing only plan_best_route!), run T steps (timing simulation). No video/CSV.
+total_tl = sum of all agents' toxicload at end of simulation.
 """
 function run_one_benchmark()
     seed = rand(Random.RandomDevice(), UInt32)
@@ -186,7 +187,8 @@ function run_one_benchmark()
         step!(model, agent_step!, model_step!, 1)
     end
 
-    return pathfinding_time, simulation_time, seed
+    total_tl = sum(a.toxicload for a in allagents(model))
+    return pathfinding_time, simulation_time, total_tl, seed
 end
 
 
@@ -350,14 +352,16 @@ end
 # --- Benchmark loop: run at least BENCHMARK_MIN_RUNS, then up to BENCHMARK_MAX_RUNS or until pathfinding avg converges (< 1% change) ---
 pathfinding_times = Float64[]
 simulation_times  = Float64[]
+total_tls = Float64[]
 seeds = UInt32[]
 avg_pathfinding_prev = 0.0
 
 println("Benchmark: Scenario 2 (pathfinding + simulation). Max runs = $BENCHMARK_MAX_RUNS, convergence = $(BENCHMARK_CONVERGENCE_PCT*100)%.")
 for run_id in 1:BENCHMARK_MAX_RUNS
-    t_path, t_sim, run_seed = run_one_benchmark()
+    t_path, t_sim, total_tl, run_seed = run_one_benchmark()
     push!(pathfinding_times, t_path)
     push!(simulation_times, t_sim)
+    push!(total_tls, total_tl)
     push!(seeds, run_seed)
 
     n = length(pathfinding_times)
@@ -383,8 +387,8 @@ avg_simulation_final  = sum(simulation_times) / n_runs
 # --- Write Excel: per-run times + summary averages ---
 xlsx_path = "SCENARIOS/SCENARIO 2/Simulation Results/Scenario_2_Benchmarking_$(n_agents).xlsx"
 run_ids = collect(1:n_runs)
-columns_data = [run_ids, seeds, pathfinding_times, simulation_times]
-column_names = ["Run", "Seed", "PathfindingTime_s", "SimulationTime_s"]
+columns_data = [run_ids, seeds, pathfinding_times, simulation_times, total_tls]
+column_names = ["Run", "Seed", "PathfindingTime_s", "SimulationTime_s", "Total TL"]
 XLSX.writetable(xlsx_path, columns_data, column_names; sheetname = "Runs", overwrite = true)
 # Append summary to same sheet (below data)
 XLSX.openxlsx(xlsx_path, mode = "rw") do xf
