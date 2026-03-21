@@ -62,6 +62,7 @@ NPM = heightmap .+ penalty_map
 NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 10                                                        # Define the n_agents variable as 3
@@ -114,7 +115,7 @@ function agent_step!(person, model)
     j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])
     Ct = penalty_map[i, j]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
@@ -134,7 +135,7 @@ function agent_step!(person, model)
     #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
     # Use move_along_route! for A* pathfinding
-    move_along_route!(person, model, model.pathfinderPM, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -378,7 +379,7 @@ end
 
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 400
+    const T = 1852
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))

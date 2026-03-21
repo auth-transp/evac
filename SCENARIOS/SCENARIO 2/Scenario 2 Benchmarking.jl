@@ -1,21 +1,12 @@
 begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
     using Agents.Pathfinding
-    using Random                        
-    using ColorTypes                      
-    using ImageMagick                 
-    using FileIO: load                     
-    using InteractiveDynamics             
-    using Images                    
-    using DataFrames           
-    using Statistics
-    using CairoMakie
-    using DelimitedFiles
-    using Observables
-    using Makie
-    using CSV
+    using Random
+    using ImageMagick
+    using FileIO: load
+    using Images
     using XLSX
-end                          
+end
 
 
 
@@ -51,8 +42,9 @@ end
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
-    n_agents = 5                                                        # Define the n_agents variable as 3
+    n_agents = 100                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -97,7 +89,7 @@ function agent_step!(person, model)
    # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
     Ct = penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
@@ -116,7 +108,7 @@ function agent_step!(person, model)
 
     #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    move_along_route!(person, model, model.pathfinderPM, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -134,7 +126,7 @@ end
 const BENCHMARK_MAX_RUNS = 100
 const BENCHMARK_CONVERGENCE_PCT = 0.01   # stop when running avg pathfinding time changes by < 1%
 const BENCHMARK_MIN_RUNS = 50            # run at least this many times before checking convergence
-const BENCHMARK_T_STEPS = 600
+const BENCHMARK_T_STEPS = 1852
 
 """
     run_one_benchmark() -> (pathfinding_time_seconds, simulation_time_seconds, total_tl, seed)
@@ -144,13 +136,13 @@ total_tl = sum of all agents' toxicload at end of simulation.
 function run_one_benchmark()
     seed = rand(Random.RandomDevice(), UInt32)
     rng_run = MersenneTwister(seed)
-    model = ABM(
+    model = StandardABM(
         AgentEscapes,
         space;
         rng          = rng_run,
         properties   = properties,
         agent_step!  = agent_step!,
-        model_step!  = model_step!
+        model_step!  = model_step!,
     )
 
     # Add agents and time only plan_best_route! for each
@@ -184,7 +176,7 @@ function run_one_benchmark()
 
     # Time simulation: T steps, no video
     simulation_time = @elapsed for _ in 1:BENCHMARK_T_STEPS
-        step!(model, agent_step!, model_step!, 1)
+        step!(model, 1)  # StandardABM already knows agent_step! and model_step!
     end
 
     total_tl = sum(a.toxicload for a in allagents(model))
@@ -383,6 +375,7 @@ end
 n_runs = length(pathfinding_times)
 avg_pathfinding_final = sum(pathfinding_times) / n_runs
 avg_simulation_final  = sum(simulation_times) / n_runs
+avg_total_tl_final    = sum(total_tls) / n_runs
 
 # --- Write Excel: per-run times + summary averages ---
 xlsx_path = "SCENARIOS/SCENARIO 2/Simulation Results/Scenario_2_Benchmarking_$(n_agents).xlsx"
@@ -399,7 +392,9 @@ XLSX.openxlsx(xlsx_path, mode = "rw") do xf
     sh[n_runs + 3, 2] = avg_pathfinding_final
     sh[n_runs + 4, 1] = "Average simulation time (s)"
     sh[n_runs + 4, 2] = avg_simulation_final
+    sh[n_runs + 5, 1] = "Average Total TL (sum toxic load accumulated)"
+    sh[n_runs + 5, 2] = avg_total_tl_final
 end
 
 println("Benchmark complete. Results written to $xlsx_path")
-println("  Total runs: $n_runs | Avg pathfinding: $(round(avg_pathfinding_final; digits=4)) s | Avg simulation: $(round(avg_simulation_final; digits=4)) s")
+println("  Total runs: $n_runs | Avg pathfinding: $(round(avg_pathfinding_final; digits=4)) s | Avg simulation: $(round(avg_simulation_final; digits=4)) s | Avg Total TL: $(round(avg_total_tl_final; digits=4))")

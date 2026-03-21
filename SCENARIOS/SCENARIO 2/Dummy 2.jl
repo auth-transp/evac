@@ -1,4 +1,4 @@
-begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
+﻿begin   # Ξ¦ΟΟΟ„Ο‰ΟƒΞ· Ο„Ο‰Ξ½ Ξ±Ο€Ξ±ΟΞ±Ξ―Ο„Ξ·Ο„Ο‰Ξ½ Ξ²ΞΉΞ²Ξ»ΞΉΞΏΞΈΞ·ΞΊΟΞ½
     using Agents
     using Agents.Pathfinding
     using Random                        
@@ -17,7 +17,8 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
 end                          
 
 
-@agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
+
+@agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Ξ‘ΟΟ‡ΞΉΞΊΞΏΟ€ΞΏΞ―Ξ·ΟƒΞ· Ο„Ο‰Ξ½ Agents
     age::Float64
     mass::Float64
     toxicload::Float64
@@ -28,28 +29,35 @@ end
     TL3::Vector{Float64}
 end
 
-
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
+    
+begin   # Ξ¦ΟΟΟ„Ο‰ΟƒΞ· Ο„ΞΏΟ… heightmap ΞΊΞ±ΞΉ Ο„Ο‰Ξ½ hand-drawn penalty maps
 
     # heightmap
-    heightmap_data = load("Concentration Maps/Dummy HM.jpg")
+    heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
+    heightmap = 255 .- heightmap   # Ξ±Ο…Ο„Ο ΞΊΞ¬Ξ½ΞµΞΉ Ο„Ξ·Ξ½ Ξ±Ξ½Ο„ΞΉΟƒΟ„ΟΞΏΟ†Ξ®
 
-
-    # Φόρτωση penalty maps
+    # Ξ¦ΟΟΟ„Ο‰ΟƒΞ· penalty maps
     penalty_map = load("Concentration Maps/6.bmp")
     penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
     global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
+    
+    # Check dimension consistency
+    @assert size(penalty_map) == size(heightmap) "penalty_map dimensions $(size(penalty_map)) do not match heightmap dimensions $(size(heightmap))"
 end
 
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
-
-begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+begin   # Ξ‘ΟΟ‡ΞΉΞΊΞΏΟ€ΞΏΞ―Ξ·ΟƒΞ· Ο„Ο‰Ξ½ Ο€Ξ±ΟΞ±ΞΌΞ­Ο„ΟΟ‰Ξ½ Ο„ΞΏΟ… ΞΌΞΏΞ½Ο„Ξ­Ξ»ΞΏΟ…
+    # Timeβ€“speed correlation: distance per step = speed Γ— dt (in space units).
+    # Treat dt as "time per step" (e.g. 1 = 1 second). Map scale: 1 m = 0.1176 pixel.
+    const METERS_TO_PIXELS = 0.2692   # 1250 m β‰ 336.5 px on map
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 50                                                        # Define the n_agents variable as 3
+    n_agents = 1                                                         # Single agent for testing
+    # Spawn position in pixel coordinates (x, y) β€” set this to place the agent exactly where you want
+    agent_spawn_pixel = (7.0, 309.0)
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -59,11 +67,17 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
     dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
-end      
+    
+    # Set walkmap to false in white areas of the heightmap (after reversal, white = high values)
+    # White areas are where heightmap value is above threshold (e.g., > 245)
+    # Black and grey areas (low to medium values) remain walkable
+    white_threshold = 245
+    walkmap[heightmap .> white_threshold] .= false
+end    
 
 
     #goals
-    dests = [(600., 980.), (100., 200.)]
+    dests = [(621., 12.)]
 
     #Generate the RNG for the model
     rng = MersenneTwister(seed)
@@ -72,11 +86,9 @@ end
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
     space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
-tmp = copy(heightmap)
-tmp[tmp .!= 0] .= typemax(Int) ÷ 4   # όλα εκτός δρόμου “απροσπέλαστα”
 
 begin
-    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(tmp, MaxDistance{2}()))
+    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = PenaltyMap(NPM, MaxDistance{2}()))
     properties = (
         pathfinderPM = pathfinderPM,
         heightmap = heightmap,
@@ -87,20 +99,33 @@ begin
 end
 
 
+# Helper: true if position is within radius of any goal (TL and movement are skipped when true)
+const goal_radius = 10.0
+function at_goal(pos, dests, radius = goal_radius)
+    return minimum(norm(pos .- d) for d in dests) ≤ radius
+end
+
 
 function agent_step!(person, model)
+    if at_goal(person.pos, model.goal)
+        # At goal: TL and movement stop; keep path in sync for visualization
+        push!(person.pathX, person.pos[1])
+        push!(person.pathY, person.pos[2])
+        return
+    end
+
     position = floor.(Int, person.pos)
-   # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
+   # Ct Ο€Ξ±Ξ―ΟΞ½ΞµΟ„Ξ±ΞΉ Ο„ΟΟΞ± Ξ±Ο€Ο Ο„ΞΏ global_penalty_map (hand-drawn maps)
     Ct = penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
     push!(person.TL2, TL[2])
     push!(person.TL3, TL[3])
 
-    # --- Speed update based on toxicload ---
+    # --- Speed in m/s (base 1.35 m/s); pathfinder expects pixels/s so scale by METERS_TO_PIXELS ---
     speed = 1.35
     if 0 < person.toxicload <= 1
         speed = 1.35 * exp(0.393 * person.toxicload)
@@ -110,9 +135,7 @@ function agent_step!(person, model)
         speed = 0.0
     end
 
-    display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
-
-    move_along_route!(person, model, model.pathfinderPM, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -126,7 +149,7 @@ function model_step!(model)
 end
 
 
-model = ABM(
+model = StandardABM(
   AgentEscapes,
   space;
   rng          = rng,
@@ -136,15 +159,24 @@ model = ABM(
 )
 
 
-@time for _ in 1:n_agents
-    age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
-    mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
-    vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
-    pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
+begin
+    # Single agent at the specified pixel (x, y)
+    pos = Tuple(Float64.(agent_spawn_pixel))
+    pos_int = floor.(Int, pos)
+    # In this space, pos[1]=x (column), pos[2]=y (row); walkmap is (row, col) = (y, x)
+    if 1 <= pos_int[2] <= size(walkmap, 1) && 1 <= pos_int[1] <= size(walkmap, 2)
+        if !walkmap[pos_int[2], pos_int[1]]
+            @warn "agent_spawn_pixel $agent_spawn_pixel is not walkable (white/blocked area); agent may not move correctly"
+        end
+    else
+        @warn "agent_spawn_pixel $agent_spawn_pixel is out of bounds (map size $(size(walkmap))); agent may not behave correctly"
+    end
+    age = rand(abmrng(model)) * (age_range[2] - age_range[1]) + age_range[1]
+    mass = rand(abmrng(model)) * (mass_range[2] - mass_range[1]) + mass_range[1]
+    vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2] - speed_range[1]) .+ speed_range[1])
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
     plan_best_route!(person, dests, model.pathfinderPM)
 end
-
 
 
 function setupToxic()                                               # Define the setupToxic function
@@ -159,11 +191,11 @@ function setupToxic()                                               # Define the
     Atime = Atime*60 #seconds                                       # Multiply the Atime array by 60 seconds to convert to seconds              
     taumin = 200.                                                   # Define the taumin variable as 200 seconds (Borris&Patnaik, 2014)          # shortest exposure time over which an AEGL 1, 2 or 3 onset can be reached
     taumax = 86400.                                                 # Define the taumax variable as 86400 seconds (Borris&Patnaik, 2014)        # longest exposure time over which an AEGL 1, 2 or 3 onset can be reached
-    Brho = zeros(7,3)                                               # Define the Brho array as a 7x3 matrix of zeros                            # in ppm for each AEGL band at every time step ‘Atime’
+    Brho = zeros(7,3)                                               # Define the Brho array as a 7x3 matrix of zeros                            # in ppm for each AEGL band at every time step β€Atimeβ€™
     Balpha = zeros(7,3)                                             # Define the Balpha array as a 7x3 matrix of zeros                          # power-law exponents
     rhomax = zeros(1,3)                                             # Define the rhomax array as a 1x3 matrix of zeros                          # maximum concentration of H2S exposed by each agent
     rhomin = zeros(1,3)                                             # Define the rhomin array as a 1x3 matrix of zeros                          # minimum concentration of H2S exposed by each agent
-    Btime = zeros(7, 3)                                             # Define the Btime array as a 7x3 matrix of zeros                           # represents an array, which is function of ‘taumin’ and ‘taumax’, that changes depending on alpha, which is a corresponsing array of power low exponents interpolating the ‘Brho’ table array
+    Btime = zeros(7, 3)                                             # Define the Btime array as a 7x3 matrix of zeros                           # represents an array, which is function of β€tauminβ€™ and β€taumaxβ€™, that changes depending on alpha, which is a corresponsing array of power low exponents interpolating the β€Brhoβ€™ table array
 
     #Initialize
     for k=1:3
@@ -272,28 +304,28 @@ end
 
 
 function static_preplot!(ax, abmplot)
-    # 1) Ξεπακετάρουμε το Observable
+    # 1) ΞΞµΟ€Ξ±ΞΊΞµΟ„Ξ¬ΟΞΏΟ…ΞΌΞµ Ο„ΞΏ Observable
     model = isa(abmplot, Observable)  ? abmplot[] :
             hasproperty(abmplot, :model) ? abmplot.model[] :
             abmplot
 
-    # 2) Σχεδιάζουμε τα goals
+    # 2) Ξ£Ο‡ΞµΞ΄ΞΉΞ¬Ξ¶ΞΏΟ…ΞΌΞµ Ο„Ξ± goals
     dests = model.goal
     xs_g = getindex.(dests, 1)
     ys_g = getindex.(dests, 2)
     scatter!(ax, xs_g, ys_g; color = (:red, 50), marker = '●')
 
-    # 3) Σχεδιάζουμε για κάθε agent τη διαδρομή που έχει ήδη κάνει
+    # 3) Ξ£Ο‡ΞµΞ΄ΞΉΞ¬Ξ¶ΞΏΟ…ΞΌΞµ Ξ³ΞΉΞ± ΞΊΞ¬ΞΈΞµ agent Ο„Ξ· Ξ΄ΞΉΞ±Ξ΄ΟΞΏΞΌΞ® Ο€ΞΏΟ… Ξ­Ο‡ΞµΞΉ Ξ®Ξ΄Ξ· ΞΊΞ¬Ξ½ΞµΞΉ
     for agent in allagents(model)
         xs = agent.pathX
         ys = agent.pathY
-        # π.χ. χρώμα ίδια με τον agent, πάχος γραμμής 2
+        # Ο€.Ο‡. Ο‡ΟΟΞΌΞ± Ξ―Ξ΄ΞΉΞ± ΞΌΞµ Ο„ΞΏΞ½ agent, Ο€Ξ¬Ο‡ΞΏΟ‚ Ξ³ΟΞ±ΞΌΞΌΞ®Ο‚ 2
         lines!(ax, xs, ys; linewidth = 2, color = personcolor(agent))
     end
 end
 
 
-function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλογα με το toxicload
+function personcolor(person::AgentEscapes)  # Ξ§ΟΟΞΌΞ± Ο„ΞΏΟ… agent Ξ±Ξ½Ξ¬Ξ»ΞΏΞ³Ξ± ΞΌΞµ Ο„ΞΏ toxicload
     if person.toxicload >= 3.
         return :red
     elseif person.toxicload <= 1.
@@ -304,20 +336,24 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
 end
 
 
-begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 600
+begin   # Ξ”Ξ·ΞΌΞΉΞΏΟ…ΟΞ³Ξ―Ξ± animation ΞΌΞµ trails & ΟƒΟ…Ξ»Ξ»ΞΏΞ³Ξ® CSV ΞΈΞ­ΟƒΞ·Ο‚ ΞΊΞ±ΞΉ toxicload
+    T = 1852
 
-    # -- Στήσιμο Figure & Axis --
+    # -- Ξ£Ο„Ξ®ΟƒΞΉΞΌΞΏ Figure & Axis --
     fig = Figure(; size = (800,800))
     ax  = Makie.Axis(fig[1,1];
                title  = "Evacuation with Toxic Trail",
                aspect = DataAspect())
 
     heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
+    
+    # --- Concentration Map visualization (contour only, overlay on heightmap) ---
+    contour!(ax, penalty_map; colormap=:hot, levels=10, linewidth=1.5, alpha=0.7)
+    
     goals = model.goal
     scatter!(ax,
-        getindex.(goals,2),  # x = col
-        getindex.(goals,1);  # y = row
+        getindex.(goals,1),
+        getindex.(goals,2);
         color  = (:red,50),
         marker = :circle,
     )
@@ -332,17 +368,17 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     padding = (6, 10, 6, 10),
     halign = :left
 )
-    fig[1,1, TopLeft()] = counter_lbl  # αγκίστρωση πάνω-αριστερά στο ίδιο κελί με τον άξονα
+    fig[1,1, TopLeft()] = counter_lbl  # Ξ±Ξ³ΞΊΞ―ΟƒΟ„ΟΟ‰ΟƒΞ· Ο€Ξ¬Ξ½Ο‰-Ξ±ΟΞΉΟƒΟ„ΞµΟΞ¬ ΟƒΟ„ΞΏ Ξ―Ξ΄ΞΉΞΏ ΞΊΞµΞ»Ξ― ΞΌΞµ Ο„ΞΏΞ½ Ξ¬ΞΎΞΏΞ½Ξ±
 
-    # -- Observables για θέση & χρώμα --
+    # -- Observables Ξ³ΞΉΞ± ΞΈΞ­ΟƒΞ· & Ο‡ΟΟΞΌΞ± --
 
     xs0 = Float64[]  # Initialize empty arrays for positions
     ys0 = Float64[]
     colors0 = Symbol[]  # Initialize empty array for colors
 
     for a in allagents(model)
-        push!(xs0, a.pos[2])  # x = col
-        push!(ys0, a.pos[1])  # y = row
+        push!(xs0, a.pos[1])
+        push!(ys0, a.pos[2])
         push!(colors0, personcolor(a))
     end
 
@@ -350,17 +386,17 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     colobs = Observable(colors0)
 
     lines_plots = [
-    lines!(ax,
-           [a.pos[2]], [a.pos[1]];   # x=col, y=row
-           color     = personcolor(a),
-           linewidth = 2)
-    for a in allagents(model)
+        lines!(ax,
+               [a.pos[1]], [a.pos[2]];
+               color     = personcolor(a),
+               linewidth = 2)
+        for a in allagents(model)
     ]
     agent_scat = scatter!(ax, posobs;
                           color      = colobs,
                           markersize = 10)
 
-    # -- Προετοιμασία DataFrame για θέση & toxicload ανά βήμα --
+    # -- Ξ ΟΞΏΞµΟ„ΞΏΞΉΞΌΞ±ΟƒΞ―Ξ± DataFrame Ξ³ΞΉΞ± ΞΈΞ­ΟƒΞ· & toxicload Ξ±Ξ½Ξ¬ Ξ²Ξ®ΞΌΞ± --
     df = DataFrame(
         step       = Int[],
         agent_id   = Int[],
@@ -369,41 +405,41 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         toxicload  = Float64[]
     )
 
-    # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/DUMMY_2_$(n_agents)_$(seed).mp4"
+    # -- ΞΞ½Ξ±ΟΞΎΞ· record: video ΞΊΞ±ΞΉ ΟƒΟ…Ξ»Ξ»ΞΏΞ³Ξ® Ξ΄ΞµΞ΄ΞΏΞΌΞ­Ξ½Ο‰Ξ½ Ο„Ξ±Ο…Ο„ΟΟ‡ΟΞΏΞ½Ξ± --
+    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
-        # 1) ενημέρωση του frame counter
+        # 1) ΞµΞ½Ξ·ΞΌΞ­ΟΟ‰ΟƒΞ· Ο„ΞΏΟ… frame counter
         frame_obs[] = frame
-        # 2) βήμα προσομοίωσης
-        step!(model, agent_step!, model_step!, 1)
+        # 2) Ξ²Ξ®ΞΌΞ± Ο€ΟΞΏΟƒΞΏΞΌΞΏΞ―Ο‰ΟƒΞ·Ο‚
+        step!(model, 1)
 
-        # 3) ενημέρωση των trails
+        # 3) ΞµΞ½Ξ·ΞΌΞ­ΟΟ‰ΟƒΞ· Ο„Ο‰Ξ½ trails
         for (i,a) in enumerate(allagents(model))
-            lines_plots[i][1][] = Point2f.(a.pathY, a.pathX)  # x=col, y=row
+            lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
         end
 
-        # 4) ενημέρωση θέσεων & δυναμικού χρώματος
-        xs = [a.pos[2] for a in allagents(model)]  # x = col
-        ys = [a.pos[1] for a in allagents(model)]  # y = row
+        # 4) ΞµΞ½Ξ·ΞΌΞ­ΟΟ‰ΟƒΞ· ΞΈΞ­ΟƒΞµΟ‰Ξ½ & Ξ΄Ο…Ξ½Ξ±ΞΌΞΉΞΊΞΏΟ Ο‡ΟΟΞΌΞ±Ο„ΞΏΟ‚
+        xs = [a.pos[1] for a in allagents(model)]
+        ys = [a.pos[2] for a in allagents(model)]
         posobs[] = Point2f.(xs, ys)
         colobs[] = [personcolor(a) for a in allagents(model)]
 
-        # 5) συλλογή δεδομένων στο DataFrame
+        # 5) ΟƒΟ…Ξ»Ξ»ΞΏΞ³Ξ® Ξ΄ΞµΞ΄ΞΏΞΌΞ­Ξ½Ο‰Ξ½ ΟƒΟ„ΞΏ DataFrame
         for a in allagents(model)
             push!(df, (
                 frame,
                 a.id,
-                a.pos[2],
                 a.pos[1],
+                a.pos[2],
                 a.toxicload
             ))
         end
     end
 
-    println("Το animation σώθηκε ως $video_file")
+    println("Ξ¤ΞΏ animation ΟƒΟΞΈΞ·ΞΊΞµ Ο‰Ο‚ $video_file")
 
-    # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/DUMMY_2_$(n_agents)_$(seed).csv"
+    # -- Ξ•ΞΎΞ±Ξ³Ο‰Ξ³Ξ® CSV ΞΌΞµ ΞΈΞ­ΟƒΞ· & toxicload Ο„Ο‰Ξ½ agents --
+    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed).csv"
     CSV.write(csv_file, df)
-    println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
+    println("Ξ¤Ξ± Ξ΄ΞµΞ΄ΞΏΞΌΞ­Ξ½Ξ± ΞΈΞ­ΟƒΞ·Ο‚ & toxicload Ξ±Ο€ΞΏΞΈΞ·ΞΊΞµΟΟ„Ξ·ΞΊΞ±Ξ½ Ο‰Ο‚ $csv_file")
 end

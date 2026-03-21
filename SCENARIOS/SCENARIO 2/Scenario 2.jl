@@ -50,6 +50,9 @@ end
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+    # Time–speed correlation: distance per step = speed × dt (in space units).
+    # Treat dt as "time per step" (e.g. 1 = 1 second). Map scale: 1250 m ≈ 336.5 px.
+    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map (so 1.35 m/s ≈ 926 frames for 1250 m)
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 50                                                        # Define the n_agents variable as 3
@@ -72,7 +75,7 @@ end
 
 
     #goals
-    dests = [(600., 980.), (100., 200.)]
+    dests = [(600., 980.), (100., 200.), (100., 800.), (830., 356.)]
 
     #Generate the RNG for the model
     rng = MersenneTwister(seed)
@@ -94,20 +97,33 @@ begin
 end
 
 
+# Helper: true if position is within radius of any goal (TL and movement are skipped when true)
+const goal_radius = 10.0
+function at_goal(pos, dests, radius = goal_radius)
+    return minimum(norm(pos .- d) for d in dests) ≤ radius
+end
+
 
 function agent_step!(person, model)
+    if at_goal(person.pos, model.goal)
+        # At goal: TL and movement stop; keep path in sync for visualization
+        push!(person.pathX, person.pos[1])
+        push!(person.pathY, person.pos[2])
+        return
+    end
+
     position = floor.(Int, person.pos)
    # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
     Ct = penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
     push!(person.TL2, TL[2])
     push!(person.TL3, TL[3])
 
-    # --- Speed update based on toxicload ---
+    # --- Speed in m/s (base 1.35 m/s); pathfinder expects pixels/s so scale by METERS_TO_PIXELS ---
     speed = 1.35
     if 0 < person.toxicload <= 1
         speed = 1.35 * exp(0.393 * person.toxicload)
@@ -117,9 +133,7 @@ function agent_step!(person, model)
         speed = 0.0
     end
 
-    #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
-
-    move_along_route!(person, model, model.pathfinderPM, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -133,7 +147,7 @@ function model_step!(model)
 end
 
 
-model = ABM(
+model = StandardABM(
   AgentEscapes,
   space;
   rng          = rng,
@@ -143,7 +157,7 @@ model = ABM(
 )
 
 
-@time begin 
+begin 
     for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
@@ -333,8 +347,8 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
 end
 
 
-@time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    T = 600
+begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
+    T = 3375
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
@@ -408,7 +422,7 @@ end
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
         # 2) βήμα προσομοίωσης
-        step!(model, agent_step!, model_step!, 1)
+        step!(model, 1)
 
         # 3) ενημέρωση των trails
         for (i,a) in enumerate(allagents(model))

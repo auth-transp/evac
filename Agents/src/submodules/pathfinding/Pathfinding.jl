@@ -36,11 +36,12 @@ include("astar.jl")
 include("astar_grid.jl")
 include("continuous_common.jl")
 include("astar_continuous.jl")
+include("flowfield.jl")
+include("flowfield_grid.jl")
+include("flowfield_continuous.jl")
 include("dstar_lite.jl")
 include("dstar_lite_grid.jl")
 include("dstar_lite_continuous.jl")
-include("id_star_lite.jl")
-include("gaussian_plume.jl")
 
 export CostMetric,
     DirectDistance,
@@ -52,17 +53,17 @@ export CostMetric,
     penaltymap,
     nearby_walkable,
     random_walkable,
+    FlowField,
+    generate_flow_field!,
+    flow_at,
+    flow_at_continuous,
+    distance_at,
     DStarLite,
     GridPathfinder,
     DStarLitePlanner,
     init_planner,
     update_after_cm_change!,
-    extract_path,
-    TerrainHazardMetric,
-    IDStarLite,
-    IDStarLitePlanner,
-    IDStarLitePlannerHeuristic,
-    gaussian_plume_map
+    extract_path
 
 # Deprecations
 @deprecate set_target! plan_route!

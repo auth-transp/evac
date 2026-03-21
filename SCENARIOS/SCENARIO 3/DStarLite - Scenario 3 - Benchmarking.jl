@@ -8,6 +8,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Random
     using StaticArrays
     using Profile
+    using BenchmarkTools
 end
 
 Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
@@ -46,8 +47,9 @@ NPM = heightmap .+ penalty_map
 NPM_int = round.(Int, NPM)
 
 begin   # Παράμετροι μοντέλου
+    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
     dt = 1.0
-    n_agents = 5
+    n_agents = 50
     toxicity_rate = 0.07
     age_range = (22, 60)
     speed_range = (4.0, 7.0)
@@ -65,8 +67,8 @@ dests = [(600., 980.), (100., 200.)]
 space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
 begin
-    cost_metric_obj = PenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "PM"
+    cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
+    cost_metric_str = "APM"
     heuristic_code  = "DF"
     pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     properties = (
@@ -98,7 +100,7 @@ function agent_step!(person, model)
     j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])
     Ct = penalty_map[i, j]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
     push!(person.TL2, TL[2])
@@ -111,7 +113,7 @@ function agent_step!(person, model)
     elseif person.toxicload >= 3
         speed = 0.0
     end
-    move_along_precomputed_path!(person, speed, dt)
+    move_along_precomputed_path!(person, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -290,20 +292,31 @@ end
 const BENCHMARK_MAX_RUNS = 100
 const BENCHMARK_CONVERGENCE_PCT = 0.01
 const BENCHMARK_MIN_RUNS = 50
-const BENCHMARK_T_STEPS = 600
+const BENCHMARK_T_STEPS = 1852
 
 """
-    run_one_benchmark() -> (pathfinding_time_seconds, simulation_time_seconds, seed, total_TL)
-Build a fresh model with random seed, add agents, time initial D* Lite planning,
-run BENCHMARK_T_STEPS with dynamic concentration maps (1→10); time stepping vs replanning.
-Returns pathfinding time, simulation time, RNG seed, and total toxic load (sum over agents). No video/CSV.
+    run_one_benchmark() -> (initial_pf_time_s, incremental_pf_time_s, simulation_time_s, seed, total_TL)
+
+Build a fresh model with random seed, add agents, time the initial D* Lite
+planning (planner init + first path extraction), then run BENCHMARK_T_STEPS
+with dynamic concentration maps (1→10) while timing all incremental replanning
+work separately from pure simulation stepping. Returns:
+
+- initial_pf_time_s: time spent on initial pathfinding (s)
+- incremental_pf_time_s: time spent on all incremental replans (s)
+- simulation_time_s: time spent stepping the model (s)
+- seed: RNG seed for this run
+- total_TL: total toxic load across agents at the end of the run
+
+No CSV/video is written from this function; higher-level code handles aggregation/Excel.
 """
 function run_one_benchmark()
     seed = rand(Random.RandomDevice(), UInt32)
     rng_run = MersenneTwister(seed)
 
     local_NPM_int = copy(NPM_int)
-    local_cost_metric_obj = PenaltyMap(local_NPM_int, MaxDistance{2}())
+    local_prev_NPM_int = copy(local_NPM_int)
+    local_cost_metric_obj = AbsolutePenaltyMap(local_NPM_int, MaxDistance{2}())
     local_pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = local_cost_metric_obj)
     local_properties = (
         pathfinderPM = local_pathfinderPM,
@@ -377,6 +390,8 @@ function run_one_benchmark()
     current_map_idx = 1
     penalty_map .= cm_list[current_map_idx]
     @. local_NPM_int = Int(round(heightmap + penalty_map))
+    local_prev_NPM_int .= local_NPM_int
+    local_pathfinderPM.cost_metric.pmap .= local_NPM_int
 
     for step_idx in 1:BENCHMARK_T_STEPS
         sim_step_time += @elapsed step!(model_run, 1)
@@ -388,14 +403,15 @@ function run_one_benchmark()
                 penalty_map .= cm_list[current_map_idx]
                 @. local_NPM_int = Int(round(heightmap + penalty_map))
 
-                # Full re-init of planners for the new map.
-                # This is typically faster than incremental D* Lite updates
-                # when almost all cells have changed (our CM1..CM10 case).
-                local_planners = [
-                    init_planner(local_pathfinderPM, goal_cell)
-                    for goal_cell in exit_cells
-                ]
+                # Incremental D* Lite update: identify changed cells and update planners in-place
+                changed_cells = find_changed_cells(local_prev_NPM_int, local_NPM_int)
+                local_prev_NPM_int .= local_NPM_int
+                local_pathfinderPM.cost_metric.pmap .= local_NPM_int
+                for planner in local_planners
+                    update_after_cm_change!(planner, changed_cells)
+                end
 
+                # Re-extract paths for all agents using the updated planners
                 for a in allagents(model_run)
                     start = world_to_cell(a.pos, size(local_NPM_int))
                     paths = [extract_path(p, start) for p in local_planners]
@@ -405,7 +421,8 @@ function run_one_benchmark()
         end
     end
 
-    pathfinding_time = planner_init_time + path_extract_time + replan_time
+    initial_pf_time = planner_init_time + path_extract_time
+    incremental_pf_time = replan_time
     simulation_time  = sim_step_time
 
     # Sum toxic load across all agents at the end of the run
@@ -414,7 +431,7 @@ function run_one_benchmark()
         total_TL += a.toxicload
     end
 
-    return pathfinding_time, simulation_time, seed, total_TL
+    return initial_pf_time, incremental_pf_time, simulation_time, seed, total_TL
 end
 
 """
@@ -423,33 +440,50 @@ Profile one benchmark run. After running, call Profile.print() or your profiler 
 """
 function profile_one_benchmark()
     Profile.clear()
-    path_t, sim_t, run_seed, total_TL = run_one_benchmark()
-    println("Profiled run (seed=$run_seed): pathfinding = $(round(path_t; digits=4)) s, simulation = $(round(sim_t; digits=4)) s, total TL = $(round(total_TL; digits=4))")
+    init_t, incr_t, sim_t, run_seed, total_TL = run_one_benchmark()
+    println("Profiled run (seed=$run_seed): initial PF = $(round(init_t; digits=4)) s, incremental PF = $(round(incr_t; digits=4)) s, simulation = $(round(sim_t; digits=4)) s, total TL = $(round(total_TL; digits=4))")
     println("Run Profile.print() or open profiler to inspect hotspots.")
 end
 
+"""
+    benchmark_run_one_benchmark(; samples = 10)
+
+Use BenchmarkTools to benchmark a single `run_one_benchmark()` invocation.
+Returns the BenchmarkTools Trial object and also prints a summary.
+"""
+function benchmark_run_one_benchmark(; samples::Int = 10)
+    println("Benchmarking run_one_benchmark() with BenchmarkTools (samples = $samples)...")
+    result = @benchmark run_one_benchmark() samples = samples
+    println(result)
+    return result
+end
+
 # --- Benchmark loop (like Scenario 2 Benchmarking) ---
-pathfinding_times = Float64[]
-simulation_times  = Float64[]
-total_TL_values   = Float64[]
+initial_pf_times   = Float64[]
+incremental_pf_times = Float64[]
+simulation_times   = Float64[]
+total_TL_values    = Float64[]
 seeds = UInt32[]
 avg_pathfinding_prev = 0.0
 
 println("Benchmark: Scenario 3 with D* Lite (pathfinding + simulation). Max runs = $BENCHMARK_MAX_RUNS, convergence = $(BENCHMARK_CONVERGENCE_PCT*100)%.")
 for run_id in 1:BENCHMARK_MAX_RUNS
-    t_path, t_sim, run_seed, total_TL = run_one_benchmark()
-    push!(pathfinding_times, t_path)
-    push!(simulation_times,  t_sim)
-    push!(total_TL_values,   total_TL)
+    t_init, t_incr, t_sim, run_seed, total_TL = run_one_benchmark()
+    push!(initial_pf_times,    t_init)
+    push!(incremental_pf_times, t_incr)
+    push!(simulation_times,     t_sim)
+    push!(total_TL_values,      total_TL)
     push!(seeds, run_seed)
 
-    n = length(pathfinding_times)
-    avg_pathfinding = sum(pathfinding_times) / n
-    avg_simulation  = sum(simulation_times)  / n
-    converged = n >= BENCHMARK_MIN_RUNS && avg_pathfinding_prev > 0 && (abs(avg_pathfinding - avg_pathfinding_prev) / avg_pathfinding_prev <= BENCHMARK_CONVERGENCE_PCT)
+    n = length(initial_pf_times)
+    avg_initial_pf    = sum(initial_pf_times)    / n
+    avg_incremental_pf = sum(incremental_pf_times) / n
+    avg_simulation    = sum(simulation_times)    / n
+    converged = n >= BENCHMARK_MIN_RUNS && avg_pathfinding_prev > 0 &&
+        (abs((avg_initial_pf + avg_incremental_pf) - avg_pathfinding_prev) / avg_pathfinding_prev <= BENCHMARK_CONVERGENCE_PCT)
 
-    println("  Run $run_id (seed=$run_seed): pathfinding = $(round(t_path; digits=4)) s, simulation = $(round(t_sim; digits=4)) s, total TL = $(round(total_TL; digits=4))  (avg pathfinding = $(round(avg_pathfinding; digits=4)) s)")
-    global avg_pathfinding_prev = avg_pathfinding
+    println("  Run $run_id (seed=$run_seed): initial PF = $(round(t_init; digits=4)) s, incremental PF = $(round(t_incr; digits=4)) s, simulation = $(round(t_sim; digits=4)) s, total TL = $(round(total_TL; digits=4))  (avg total PF = $(round(avg_initial_pf + avg_incremental_pf; digits=4)) s)")
+    global avg_pathfinding_prev = avg_initial_pf + avg_incremental_pf
 
     if converged
         println("Converged at run $run_id (pathfinding avg change < $(BENCHMARK_CONVERGENCE_PCT*100)%).")
@@ -457,24 +491,30 @@ for run_id in 1:BENCHMARK_MAX_RUNS
     end
 end
 
-n_runs = length(pathfinding_times)
-avg_pathfinding_final = sum(pathfinding_times) / n_runs
+n_runs = length(initial_pf_times)
+avg_initial_pf_final    = sum(initial_pf_times)    / n_runs
+avg_incremental_pf_final = sum(incremental_pf_times) / n_runs
+avg_pathfinding_final   = avg_initial_pf_final + avg_incremental_pf_final
 avg_simulation_final  = sum(simulation_times)  / n_runs
 
 xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_Benchmarking_$(n_agents)_$(cost_metric_str)_$(heuristic_code).xlsx"
 run_ids = collect(1:n_runs)
-columns_data = [run_ids, seeds, pathfinding_times, simulation_times, total_TL_values]
-column_names = ["Run", "Seed", "PathfindingTime_s", "SimulationTime_s", "Total TL"]
+columns_data = [run_ids, seeds, initial_pf_times, incremental_pf_times, simulation_times, total_TL_values]
+column_names = ["Run", "Seed", "InitialPathfindingTime_s", "IncrementalPathfindingTime_s", "SimulationTime_s", "Total TL"]
 XLSX.writetable(xlsx_path, columns_data, column_names; sheetname = "Runs", overwrite = true)
 XLSX.openxlsx(xlsx_path, mode = "rw") do xf
     sh = xf["Runs"]
     sh[n_runs + 2, 1] = "Number of runs"
     sh[n_runs + 2, 2] = n_runs
-    sh[n_runs + 3, 1] = "Average pathfinding time (s)"
-    sh[n_runs + 3, 2] = avg_pathfinding_final
-    sh[n_runs + 4, 1] = "Average simulation time (s)"
-    sh[n_runs + 4, 2] = avg_simulation_final
+    sh[n_runs + 3, 1] = "Average initial pathfinding time (s)"
+    sh[n_runs + 3, 2] = avg_initial_pf_final
+    sh[n_runs + 4, 1] = "Average incremental pathfinding time (s)"
+    sh[n_runs + 4, 2] = avg_incremental_pf_final
+    sh[n_runs + 5, 1] = "Average total pathfinding time (s)"
+    sh[n_runs + 5, 2] = avg_pathfinding_final
+    sh[n_runs + 6, 1] = "Average simulation time (s)"
+    sh[n_runs + 6, 2] = avg_simulation_final
 end
 
 println("Benchmark complete. Results written to $xlsx_path")
-println("  Total runs: $n_runs | Avg pathfinding: $(round(avg_pathfinding_final; digits=4)) s | Avg simulation: $(round(avg_simulation_final; digits=4)) s")
+println("  Total runs: $n_runs | Avg initial PF: $(round(avg_initial_pf_final; digits=4)) s | Avg incremental PF: $(round(avg_incremental_pf_final; digits=4)) s | Avg simulation: $(round(avg_simulation_final; digits=4)) s")

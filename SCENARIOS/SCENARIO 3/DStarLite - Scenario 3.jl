@@ -12,6 +12,10 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Observables
     using Random
     using StaticArrays
+
+    #include("../../Agents/src/Agents.jl")
+    #using .Agents               # core Agents.jl API
+    #using .Agents.Pathfinding   # DStarLite, AbsolutePenaltyMap, MaxDistance, init_planner, update_after_cm_change!, extract_path, ...
 end       
 
 
@@ -58,13 +62,14 @@ NPM = heightmap .+ penalty_map
 NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
-    seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 100                                                        # Define the n_agents variable as 3
+    seed = 3989450875  ## seed for random number generator                     # Define the seed variable as 123
+    n_agents = 5                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
-    speed = 5.                                                         # Define the speed variable as 5 
+    speed = 5.0                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
@@ -87,7 +92,7 @@ end
 
     ## Note that the dimensions of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
-    space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
+    space = Pathfinding.ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
 
 begin
@@ -130,7 +135,7 @@ function agent_step!(person, model)
     j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])
     Ct = penalty_map[i, j]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
@@ -148,7 +153,7 @@ function agent_step!(person, model)
     end
 
     # use the global `pathfinderPM` (do not mutate model properties)
-    move_along_precomputed_path!(person, speed, dt)
+    move_along_precomputed_path!(person, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -170,7 +175,7 @@ model = ABM(
   model_step!  = model_step!
 )
 
-@time   begin
+begin
     for _ in 1:n_agents
         age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
         mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
@@ -397,7 +402,7 @@ end
 
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 600
+    const T = 1852
     frames_per_map = 60
     const NUM_MAPS = 10
 
@@ -482,14 +487,20 @@ end
     # keep a variable for the currently active map index
     current_map_idx = 1
 
-    # --- Accumulator for path-planning time only (init + in-loop, summed) ---
-    path_planning_time = Ref(0.0)
+    # --- Accumulators for timing (in seconds) ---
+    # Pathfinding (initial planners + initial paths)
+    path_planning_init_time = Ref(0.0)
+    # Pathfinding during concentration-map changes (replanning)
+    path_planning_replan_time = Ref(0.0)
+    # Simulation time (step! calls only)
+    simulation_time = Ref(0.0)
 
     # --- INIT D* Lite planners (one per exit) ---
     grid_dims = size(NPM_int)
     exit_cells = [world_to_cell(g, grid_dims) for g in model.goal]
 
-    path_planning_time[] += @elapsed begin
+    # Initial pathfinding: build planners and extract initial best paths
+    path_planning_init_time[] += @elapsed begin
         global planners
         planners = [
             init_planner(pathfinderPM, goal_cell)
@@ -514,8 +525,8 @@ end
         # update frame counter observable
         frame_obs[] = frame
 
-        # 1) step the model normally
-        step!(model, 1)
+        # 1) step the model normally (simulation time only)
+        simulation_time[] += @elapsed step!(model, 1)
 
         # 2) determine which CM index should be active on this frame
         global current_map_idx  # Declare `current_map_idx` as global
@@ -540,8 +551,8 @@ end
             changed_cells = find_changed_cells(prev_NPM_int, NPM_int) # <-- use your existing diff logic
             prev_NPM_int .= NPM_int  
 
-            # --- Path planning time: D* Lite update + per-agent path extraction ---
-            path_planning_time[] += @elapsed begin
+            # --- Path planning time (replanning): D* Lite update + per-agent path extraction ---
+            path_planning_replan_time[] += @elapsed begin
                 for planner in planners
                     update_after_cm_change!(planner, changed_cells)
                 end
@@ -590,7 +601,14 @@ end
     println("Το animation σώθηκε ως $video_file")
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
-    println("Total path planning time (best path only, init + in-loop summed): ", round(path_planning_time[]; digits=6), " s")
+
+    # --- Timing summary ---
+    total_path_planning = path_planning_init_time[] + path_planning_replan_time[]
+    println("TIMING BREAKDOWN:")
+    println("  Pathfinding time (total): ", round(total_path_planning; digits=6), " s")
+    println("    - Initial pathfinding: ", round(path_planning_init_time[]; digits=6), " s")
+    println("    - Replanning during CM changes: ", round(path_planning_replan_time[]; digits=6), " s")
+    println("  Simulation time (step! only): ", round(simulation_time[]; digits=6), " s")
 end
 
 

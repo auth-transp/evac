@@ -53,6 +53,7 @@ NPM = heightmap .+ penalty_map
 NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     n_agents = 5                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
@@ -124,7 +125,7 @@ function agent_step!(person, model)
     j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])
     Ct = penalty_map[i, j]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
@@ -142,7 +143,7 @@ function agent_step!(person, model)
     end
 
     # use the global `pathfinderPM` (do not mutate model properties)
-    move_along_precomputed_path!(person, speed, dt)
+    move_along_precomputed_path!(person, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -357,7 +358,7 @@ end
 
 # Simulation without video creation - for timing measurements
 println("Starting simulation (no video)...")
-const T = 600
+const T = 1852
 frames_per_map = 60
 const NUM_MAPS = 10
 

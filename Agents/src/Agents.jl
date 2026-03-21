@@ -60,7 +60,6 @@ include("simulations/ensemblerun.jl")
 
 # Other features that exist in submodules
 include("submodules/pathfinding/Pathfinding.jl")
-include("submodules/pathfinding/sfm.jl")
 include("submodules/schedulers.jl")
 include("submodules/io/AgentsIO.jl")
 

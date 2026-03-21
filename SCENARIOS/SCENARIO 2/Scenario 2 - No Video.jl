@@ -44,6 +44,7 @@ end
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
+    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 10                                                        # Define the n_agents variable as 3
@@ -94,7 +95,7 @@ function agent_step!(person, model)
    # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
     Ct = penalty_map[position[1], position[2]]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
-    TL = update_toxic_load(Ct, TLcurrent, dt)
+    TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
     person.toxicload = sum(TL)
     push!(person.TL1, TL[1])
@@ -113,7 +114,7 @@ function agent_step!(person, model)
 
     #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    move_along_route!(person, model, model.pathfinderPM, speed, dt)
+    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -137,7 +138,8 @@ model = ABM(
 )
 
 
-@time for _ in 1:n_agents
+pathfinding_time = 0.0
+for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
     vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
@@ -164,8 +166,9 @@ model = ABM(
     end
     
     person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    plan_best_route!(person, dests, model.pathfinderPM)
+    pathfinding_time += @elapsed plan_best_route!(person, dests, model.pathfinderPM)
 end
+println("Pathfinding only (plan_best_route!): $(round(pathfinding_time; digits=4)) s for $n_agents agents")
 
 
 
@@ -294,7 +297,7 @@ end
 
 # Simulation without video creation - for timing measurements
 println("Starting simulation (no video)...")
-const T = 600
+const T = 1852
 
 # -- Προετοιμασία DataFrame για θέση & toxicload ανά βήμα --
 df = DataFrame(
