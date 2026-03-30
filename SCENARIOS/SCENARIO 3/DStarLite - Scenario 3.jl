@@ -69,7 +69,6 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
-    speed = 5.0                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
@@ -179,7 +178,7 @@ begin
     for _ in 1:n_agents
         age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
         mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
-        vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
+    vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
         
         # Keep trying to find a valid spawn position that is walkable (not in white/black areas)
         max_attempts = 1000

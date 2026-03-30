@@ -52,14 +52,13 @@ NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     # Time–speed correlation: distance per step = speed × dt (in space units).
     # Treat dt as "time per step" (e.g. 1 = 1 second). Map scale: 1250 m ≈ 336.5 px.
-    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map (so 1.35 m/s ≈ 926 frames for 1250 m)
+    const METERS_TO_PIXELS = 0.2676   # 2500 m ≈ 669 px on map (so 1.35 m/s ≈ 1852 frames for 2500 m)
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 50                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
-    speed = 5.                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
@@ -191,22 +190,22 @@ end
 
 
 function setupToxic()                                               # Define the setupToxic function
-    Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33] #min                # Define the Atime array as a 1x6 matrix                                    # Initialization of the 5 standard AEGL exposure times
-    Arho = zeros(3, 6)                                              # Define the Arho array as a 3x6 matrix                                     # the concentration of the three symptoms compared to the AEGL concentrations
-    Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]                   # Define the Arho array for the first row and columns 2 to 6                # odor
-    Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]         # Define the Arho array for the second row and columns 2 to 6               # irritation
-    Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm    # Define the Arho array for the third row and columns 2 to 6                # edema
-    MW = 34 #Molecular weight of H2S in g/mol
+    Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33] #min                # Initialization of the 5 standard AEGL exposure times
+    Arho = zeros(3, 6)                                              # the concentration of the three symptoms compared to the AEGL concentrations
+    Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]                   # odor
+    Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]         # irritation
+    Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm    # edema
+    MW = 34                                                         # Molecular weight of H2S in g/mol
     Arho *= MW/24.04 #mg/m^3                                        # Multiply the Arho array by the molecular weight of H2S divided by 24.04
     Arho = Arho'                                                    # Transpose the Arho array 
     Atime = Atime*60 #seconds                                       # Multiply the Atime array by 60 seconds to convert to seconds              
-    taumin = 200.                                                   # Define the taumin variable as 200 seconds (Borris&Patnaik, 2014)          # shortest exposure time over which an AEGL 1, 2 or 3 onset can be reached
-    taumax = 86400.                                                 # Define the taumax variable as 86400 seconds (Borris&Patnaik, 2014)        # longest exposure time over which an AEGL 1, 2 or 3 onset can be reached
-    Brho = zeros(7,3)                                               # Define the Brho array as a 7x3 matrix of zeros                            # in ppm for each AEGL band at every time step ‘Atime’
-    Balpha = zeros(7,3)                                             # Define the Balpha array as a 7x3 matrix of zeros                          # power-law exponents
-    rhomax = zeros(1,3)                                             # Define the rhomax array as a 1x3 matrix of zeros                          # maximum concentration of H2S exposed by each agent
-    rhomin = zeros(1,3)                                             # Define the rhomin array as a 1x3 matrix of zeros                          # minimum concentration of H2S exposed by each agent
-    Btime = zeros(7, 3)                                             # Define the Btime array as a 7x3 matrix of zeros                           # represents an array, which is function of ‘taumin’ and ‘taumax’, that changes depending on alpha, which is a corresponsing array of power low exponents interpolating the ‘Brho’ table array
+    taumin = 200.                                                   # shortest exposure time over which an AEGL 1, 2 or 3 onset can be reached
+    taumax = 86400.                                                 # longest exposure time over which an AEGL 1, 2 or 3 onset can be reached
+    Brho = zeros(7,3)                                               # in ppm for each AEGL band at every time step ‘Atime’
+    Balpha = zeros(7,3)                                             # power-law exponents
+    rhomax = zeros(1,3)                                             # maximum concentration of H2S exposed by each agent
+    rhomin = zeros(1,3)                                             # minimum concentration of H2S exposed by each agent
+    Btime = zeros(7, 3)                                             # represents an array, which is function of ‘taumin’ and ‘taumax’, that changes depending on alpha, which is a corresponsing array of power low exponents interpolating the ‘Brho’ table array
 
     #Initialize
     for k=1:3

@@ -16656,3 +16656,63 @@ endobj
 startxref
 1524723
 %%EOF
+30 0 obj
+<</Contents 809 0 R/CropBox[ 0 0 612 792]/Group 810 0 R/MediaBox[ 0 0 612 792]/Parent 13 0 R/Resources<</ColorSpace<</CS0[/ICCBased 804 0 R]/CS1[/Indexed[/ICCBased 811 0 R] 62 812 0 R]/CS2[/Indexed[/ICCBased 811 0 R] 246 813 0 R]>>/ExtGState<</GS0 785 0 R>>/Font<</TT0 814 0 R/TT1 815 0 R>>/XObject<</Im0 816 0 R/Im1 817 0 R>>>>/Rotate 0/StructParents 1/Type/Page/Annots 1051 0 R>>
+endobj
+1051 0 obj
+[ 1052 0 R 1053 0 R]
+endobj
+1052 0 obj
+<</Type/Annot/Subtype/Highlight/P 30 0 R/F 4/M(D:20260322202053+02'00')/NM(2871c6aa-142f-47ca-816e-aeffd4a671f2)/Rect[ 72 540.12 543 567.72]/C[ 1 .941176 .4]/Popup 1053 0 R/CA 1/CreationDate(D:20260322202053+02'00')/QuadPoints[ 297.48 567.72 543 567.72 297.48 553.92 543 553.92 72 553.92 401.88 553.92 72 540.12 401.88 540.12]/AP<</N 1060 0 R>>>>
+endobj
+1053 0 obj
+<</Type/Annot/Subtype/Popup/Open false/F 28/Rect[ 612 447.72 792 567.72]/Parent 1052 0 R>>
+endobj
+1058 0 obj
+<</Length 142/Type/XObject/Subtype/Form/FormType 1/BBox[ 72 540.12 543 567.72]/Matrix[ 1 0 0 1 -72 -540.12]/Resources<</ProcSet[/PDF]>>>>
+stream
+1 .941176 .4 rg
+.8625 w
+297.48 553.92 m
+297.48 567.72 l
+543 567.72 l
+543 553.92 l
+f
+72 540.12 m
+72 553.92 l
+401.88 553.92 l
+401.88 540.12 l
+f
+
+endstream
+endobj
+1059 0 obj
+<</Length 9/Type/XObject/Subtype/Form/FormType 1/BBox[ 0 0 471 27.6]/Matrix[ 1 0 0 1 0 0]/Resources<</ProcSet[/PDF]/XObject<</Form 1058 0 R>>>>/Group<</S/Transparency>>>>
+stream
+/Form Do
+
+endstream
+endobj
+1060 0 obj
+<</Length 20/Type/XObject/Subtype/Form/FormType 1/BBox[ 0 0 471 27.6]/Matrix[ 1 0 0 1 0 0]/Resources<</ProcSet[/PDF]/XObject<</MWFOForm 1059 0 R>>/ExtGState<</R0 1061 0 R>>>>>>
+stream
+/R0 gs
+/MWFOForm Do
+
+endstream
+endobj
+1061 0 obj
+<</Type/ExtGState/AIS false/BM/Multiply>>
+endobj
+7 0 obj
+<</Author(Boris, Jay P.;Patnaik, G.)/Company(LCP&FD)/CreationDate(D:20131007075814-04'00')/Creator(Acrobat PDFMaker 10.1 for Word)/Keywords(*COMPUTATIONAL FLUID DYNAMICS;*COMPUTER PROGRAMS;*CONTAMINANTS;*EXPOSURE(PHYSIOLOGY);*TOXIC AGENTS;AIRBORNE;ALGORITHMS;AMMONIA;CHLORINE;PLUMES;PREDICTIONS;TIME)/ModDate(D:20260322202100+02'00')/Producer(Adobe Acrobat 10.1.8 Paper Capture Plug-in)/SourceModified(D:20131007114359)/Subject(Toxic airborne contaminants, when inhaled, can cause adverse health effects. The U.S. EPA tabulates three Acute Exposure Guideline Levels AEGLs for predicting the onset of these adverse effects from specific length exposures to specific concentrations of toxic chemicals for a general population. Inhalation exposures in the real world, however, vary strongly in space and time and thus do not correspond to the specific durations and exposure levels tabulated by the EPA-a complication that EPA does not resolve. This report gives an accurate, science-based algorithm with fast, easy-to-use software to fill this gap. The software package, called EAGLE, predicts the onset of AEGL 1, 2 and 3 conditions for an arbitrary airborne agent time history supplied by the user. EAGLE can be used with field data, sensor data, wind tunnel measurements, Computational Fluid Dynamics models and rapid-response plume prediction software to convert agent time histories into meaningful actionable health effect predictions. It can also be used to predict the strong effects of realistic concentration fluctuations and to compare plume prediction models in a meaningful way.)/Title(Acute Exposure Guideline Levels (AEGLs) for Time Varying Toxic Plumes)/Filename(/pdf/TR/ADA610694.pdf)>>
+endobj
+1062 0 obj
+<</Type/XRef/Size 1063/Prev 1524723/Root 1 0 R/Info 7 0 R/ID[<17618BDA44D21C4F86764530DDEBE4F8><71365ADFD2DE901F2168F4324B63235D>]/W[ 1 4 2]/Index[ 7 1 30 1 1051 3 1058 5]/Filter/FlateDecode/Length 49>>
+stream
+xœbd÷yÍÀÀÈ î¦ ¦Ü×A¨«`ÊÓ	B­S^oÀ”÷Q0å^ÀÀ    ÿÿ
+endstream
+endobj
+startxref
+1528736
+%%EOF

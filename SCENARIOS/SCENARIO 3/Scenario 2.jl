@@ -62,14 +62,16 @@ NPM = heightmap .+ penalty_map
 NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
-    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
+    const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 10                                                        # Define the n_agents variable as 3
+    n_agents = 1                                                        # Single agent for corner-to-corner run
+    # true = Euclidean straight line to nearest goal (ignores walkmap / A*)
+    straight_line_navigation = true
+    agent_spawn_pixel = (10.0, 304.0)                                  # top-left white corner
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
-    speed = 5.                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
@@ -84,8 +86,8 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
 end    
 
 
-    #goals
-    dests = [(600., 980.), (100., 200.)]
+    #goals (bottom-left white corner of grey area)
+    dests = [(620.0, 20.0)]
 
     #Generate the RNG for the model
     rng = MersenneTwister(seed)
@@ -104,12 +106,64 @@ begin
         heightmap = heightmap,
         dt = dt,
         speed_range = speed_range,
-        goal = dests
+        goal = dests,
+        straight_line = straight_line_navigation,
     )
 end
 
 
+const goal_radius = 10.0
+function at_goal(pos, dests, radius = goal_radius)
+    px, py = Float64(pos[1]), Float64(pos[2])
+    return minimum(hypot(px - d[1], py - d[2]) for d in dests) ≤ radius
+end
+
+function nearest_goal(pos, dests)
+    px, py = Float64(pos[1]), Float64(pos[2])
+    best = dests[1]
+    bestd = (px - best[1])^2 + (py - best[2])^2
+    for k in 2:length(dests)
+        d = dests[k]
+        dd = (px - d[1])^2 + (py - d[2])^2
+        if dd < bestd
+            bestd = dd
+            best = d
+        end
+    end
+    return best
+end
+
+"""Straight-line motion toward nearest goal at `speed_px_per_s` (px/s). Ignores walkmap."""
+function move_straight_line!(person, model, speed_px_per_s::Float64, dt::Float64)
+    speed_px_per_s ≤ 0 && return
+    tgt = nearest_goal(Tuple(person.pos), model.goal)
+    p = person.pos
+    px, py = Float64(p[1]), Float64(p[2])
+    dx, dy = tgt[1] - px, tgt[2] - py
+    dist = hypot(dx, dy)
+    dist < 1e-12 && return
+    step = speed_px_per_s * dt
+    if step ≥ dist
+        newpos = (tgt[1], tgt[2])
+    else
+        newpos = (px + (dx / dist) * step, py + (dy / dist) * step)
+    end
+    ext = spacesize(model)
+    newpos = (
+        clamp(newpos[1], 0.0, Float64(ext[1])),
+        clamp(newpos[2], 0.0, Float64(ext[2])),
+    )
+    move_agent!(person, newpos, model)
+end
+
+
 function agent_step!(person, model)
+    if at_goal(person.pos, model.goal)
+        push!(person.pathX, person.pos[1])
+        push!(person.pathY, person.pos[2])
+        return
+    end
+
     grid_dims = size(penalty_map)
     i = clamp(Int(floor(person.pos[1])), 1, grid_dims[1])
     j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])
@@ -134,8 +188,11 @@ function agent_step!(person, model)
 
     #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    # Use move_along_route! for A* pathfinding
-    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
+    if model.straight_line
+        move_straight_line!(person, model, speed * METERS_TO_PIXELS, model.dt)
+    else
+        move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
+    end
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -179,45 +236,30 @@ function choose_best_path(paths::Vector{Vector{Tuple{Float64,Float64}}})
 end
 
 @time begin
-    for _ in 1:n_agents
-        age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
-        mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
-        vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])
-        
-        # Keep trying to find a valid spawn position that is walkable (not in white/black areas)
-        max_attempts = 1000
-        attempts = 0
-        pos = nothing
-        while attempts < max_attempts
-            candidate_pos = Tuple((rand(abmrng(model), floor.(ag_range_y)), rand(abmrng(model), floor.(ag_range_x))))
-            pos_int = floor.(Int, candidate_pos)
-            # Check if position is within bounds and walkable
-            if 1 <= pos_int[1] <= size(walkmap, 1) && 1 <= pos_int[2] <= size(walkmap, 2) && walkmap[pos_int[1], pos_int[2]]
-                pos = candidate_pos
-                break
-            end
-            attempts += 1
+    # Single agent at the specified pixel (x, y)
+    pos = Tuple(Float64.(agent_spawn_pixel))
+    pos_int = floor.(Int, pos)
+    if 1 <= pos_int[2] <= size(walkmap, 1) && 1 <= pos_int[1] <= size(walkmap, 2)
+        if !walkmap[pos_int[2], pos_int[1]]
+            @warn "agent_spawn_pixel $agent_spawn_pixel is not walkable (white/blocked area); agent may not move correctly"
         end
-        
-        # If we couldn't find a valid position after max_attempts, skip this agent
-        if pos === nothing
-            println("Warning: Could not find valid walkable spawn position for agent in Scenario 2 after $max_attempts attempts")
-            continue
-        end
-        
-        person = add_agent!(
-            pos, AgentEscapes, model,
-            vel, age, mass, 1.,
-            Tuple{Float64,Float64}[],     # path
-            [pos[1]],             # pathX
-            [pos[2]],             # pathY
-            [0.0], [0.0], [0.0]
-        )
-        
-        # Plan path using A* (plan_best_route! handles multiple destinations)
-        plan_best_route!(person, dests, model.pathfinderPM)
-        
+    else
+        @warn "agent_spawn_pixel $agent_spawn_pixel is out of bounds (map size $(size(walkmap))); agent may not behave correctly"
     end
+
+    age = rand(abmrng(model)) * (age_range[2] - age_range[1]) + age_range[1]
+    mass = rand(abmrng(model)) * (mass_range[2] - mass_range[1]) + mass_range[1]
+    vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2] - speed_range[1]) .+ speed_range[1])
+
+    person = add_agent!(
+        pos, AgentEscapes, model,
+        vel, age, mass, 1.,
+        Tuple{Float64,Float64}[],     # path
+        [pos[1]],                     # pathX
+        [pos[2]],                     # pathY
+        [0.0], [0.0], [0.0]
+    )
+    model.straight_line || plan_best_route!(person, dests, model.pathfinderPM)
 end
 
 
@@ -379,7 +421,7 @@ end
 
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 1852
+    T = model.straight_line ? 2000 : 3100
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))

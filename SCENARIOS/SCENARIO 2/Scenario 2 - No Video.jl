@@ -51,7 +51,6 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     toxicity_rate = 0.07                                                # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                             # Define the speed_range variable as a tuple of 4.0 and 7.0
-    speed = 5.                                                          # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)        # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)        # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row

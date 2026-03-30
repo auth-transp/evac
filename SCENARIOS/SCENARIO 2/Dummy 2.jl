@@ -1,4 +1,4 @@
-﻿begin   # Ξ¦ΟΟΟ„Ο‰ΟƒΞ· Ο„Ο‰Ξ½ Ξ±Ο€Ξ±ΟΞ±Ξ―Ο„Ξ·Ο„Ο‰Ξ½ Ξ²ΞΉΞ²Ξ»ΞΉΞΏΞΈΞ·ΞΊΟΞ½
+begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
     using Agents.Pathfinding
     using Random                        
@@ -17,8 +17,7 @@
 end                          
 
 
-
-@agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Ξ‘ΟΟ‡ΞΉΞΊΞΏΟ€ΞΏΞ―Ξ·ΟƒΞ· Ο„Ο‰Ξ½ Agents
+@agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
     age::Float64
     mass::Float64
     toxicload::Float64
@@ -29,16 +28,16 @@ end
     TL3::Vector{Float64}
 end
 
-    
-begin   # Ξ¦ΟΟΟ„Ο‰ΟƒΞ· Ο„ΞΏΟ… heightmap ΞΊΞ±ΞΉ Ο„Ο‰Ξ½ hand-drawn penalty maps
+
+begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
 
     # heightmap
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
-    heightmap = 255 .- heightmap   # Ξ±Ο…Ο„Ο ΞΊΞ¬Ξ½ΞµΞΉ Ο„Ξ·Ξ½ Ξ±Ξ½Ο„ΞΉΟƒΟ„ΟΞΏΟ†Ξ®
+    heightmap = 255 .- heightmap   # match Scenario 2.jl: invert so white = high → blocked by walkmap threshold
 
-    # Ξ¦ΟΟΟ„Ο‰ΟƒΞ· penalty maps
+    # Φόρτωση penalty maps
     penalty_map = load("Concentration Maps/6.bmp")
     penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
     global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
@@ -50,18 +49,17 @@ end
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Ξ‘ΟΟ‡ΞΉΞΊΞΏΟ€ΞΏΞ―Ξ·ΟƒΞ· Ο„Ο‰Ξ½ Ο€Ξ±ΟΞ±ΞΌΞ­Ο„ΟΟ‰Ξ½ Ο„ΞΏΟ… ΞΌΞΏΞ½Ο„Ξ­Ξ»ΞΏΟ…
-    # Timeβ€“speed correlation: distance per step = speed Γ— dt (in space units).
-    # Treat dt as "time per step" (e.g. 1 = 1 second). Map scale: 1 m = 0.1176 pixel.
-    const METERS_TO_PIXELS = 0.2692   # 1250 m β‰ 336.5 px on map
+    # Time–speed correlation: distance per step = speed × dt (in space units).
+    # dt = 1 s per step. Scale: 2.5 km along TL↔BL diagonal ≈ 723 px → pixels per metre.
+    const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 1                                                         # Single agent for testing
-    # Spawn position in pixel coordinates (x, y) β€” set this to place the agent exactly where you want
-    agent_spawn_pixel = (7.0, 309.0)
+    # Spawn: top-left white corner of grey site (x, y); goal is bottom-left white corner
+    agent_spawn_pixel = (10.0, 304.0)
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
-    speed = 5.                                                         # Define the speed variable as 5 
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
@@ -76,8 +74,8 @@ begin   # Ξ‘ΟΟ‡ΞΉΞΊΞΏΟ€ΞΏΞ―Ξ·ΟƒΞ· Ο„Ο‰Ξ½ Ο
 end    
 
 
-    #goals
-    dests = [(621., 12.)]
+    #goals (bottom-left white corner of grey area)
+    dests = [(620.0, 20.0)]
 
     #Generate the RNG for the model
     rng = MersenneTwister(seed)
@@ -105,7 +103,6 @@ function at_goal(pos, dests, radius = goal_radius)
     return minimum(norm(pos .- d) for d in dests) ≤ radius
 end
 
-
 function agent_step!(person, model)
     if at_goal(person.pos, model.goal)
         # At goal: TL and movement stop; keep path in sync for visualization
@@ -114,9 +111,10 @@ function agent_step!(person, model)
         return
     end
 
-    position = floor.(Int, person.pos)
-   # Ct Ο€Ξ±Ξ―ΟΞ½ΞµΟ„Ξ±ΞΉ Ο„ΟΟΞ± Ξ±Ο€Ο Ο„ΞΏ global_penalty_map (hand-drawn maps)
-    Ct = penalty_map[position[1], position[2]]
+    # Continuous positions can sit in (0,1) on an edge → floor(...) may be 0; clamp for 1-based indexing
+    ix = clamp(floor(Int, person.pos[1]), 1, size(penalty_map, 1))
+    iy = clamp(floor(Int, person.pos[2]), 1, size(penalty_map, 2))
+    Ct = penalty_map[ix, iy]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
@@ -337,7 +335,8 @@ end
 
 
 begin   # Ξ”Ξ·ΞΌΞΉΞΏΟ…ΟΞ³Ξ―Ξ± animation ΞΌΞµ trails & ΟƒΟ…Ξ»Ξ»ΞΏΞ³Ξ® CSV ΞΈΞ­ΟƒΞ·Ο‚ ΞΊΞ±ΞΉ toxicload
-    T = 1852
+    # ~1852 s = 2.5 km / 1.35 m/s straight-line scale; A* path is longer → more steps
+    T = 3100
 
     # -- Ξ£Ο„Ξ®ΟƒΞΉΞΌΞΏ Figure & Axis --
     fig = Figure(; size = (800,800))

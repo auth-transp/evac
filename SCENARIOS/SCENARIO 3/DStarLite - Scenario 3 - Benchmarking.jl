@@ -53,7 +53,6 @@ begin   # Παράμετροι μοντέλου
     toxicity_rate = 0.07
     age_range = (22, 60)
     speed_range = (4.0, 7.0)
-    speed = 5.0
     mass_range = (50, 80)
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)
