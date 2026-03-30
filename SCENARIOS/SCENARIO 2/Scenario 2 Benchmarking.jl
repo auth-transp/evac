@@ -42,7 +42,7 @@ end
 NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
-    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
+    const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     n_agents = 100                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
@@ -83,7 +83,22 @@ end
 
 
 
+#
+# Helper: true if position is within radius of any goal (TL and movement stop when true)
+const goal_radius = 10.0
+function at_goal(pos, dests, radius = goal_radius)
+    px, py = Float64(pos[1]), Float64(pos[2])
+    return minimum(hypot(px - d[1], py - d[2]) for d in dests) <= radius
+end
+
+
 function agent_step!(person, model)
+    if at_goal(person.pos, model.goal)
+        push!(person.pathX, person.pos[1])
+        push!(person.pathY, person.pos[2])
+        return
+    end
+
     position = floor.(Int, person.pos)
    # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
     Ct = penalty_map[position[1], position[2]]

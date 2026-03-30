@@ -55,7 +55,7 @@ NPM_int = round.(Int, NPM)
 
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
-    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
+    const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.
     seed = 123
     n_agents = 100
@@ -105,7 +105,22 @@ begin
 end
 
 
+#
+# Helper: true if position is within radius of any goal (TL and movement stop when true)
+const goal_radius = 10.0
+function at_goal(pos, dests, radius = goal_radius)
+    px, py = Float64(pos[1]), Float64(pos[2])
+    return minimum(hypot(px - d[1], py - d[2]) for d in dests) <= radius
+end
+
+
 function agent_step!(person, model)
+    if at_goal(person.pos, model.goal)
+        push!(person.pathX, person.pos[1])
+        push!(person.pathY, person.pos[2])
+        return
+    end
+
     position = floor.(Int, person.pos)
     # Clamp to valid 1-based indices (agent can be near boundary)
     position = (clamp(position[1], 1, size(penalty_map, 1)), clamp(position[2], 1, size(penalty_map, 2)))

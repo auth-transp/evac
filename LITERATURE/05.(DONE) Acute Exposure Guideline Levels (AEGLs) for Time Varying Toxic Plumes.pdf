@@ -16716,3 +16716,18 @@ endobj
 startxref
 1528736
 %%EOF
+1005 0 obj
+[]
+endobj
+7 0 obj
+<</Author(Boris, Jay P.;Patnaik, G.)/Company(LCP&FD)/CreationDate(D:20131007075814-04'00')/Creator(Acrobat PDFMaker 10.1 for Word)/Keywords(*COMPUTATIONAL FLUID DYNAMICS;*COMPUTER PROGRAMS;*CONTAMINANTS;*EXPOSURE(PHYSIOLOGY);*TOXIC AGENTS;AIRBORNE;ALGORITHMS;AMMONIA;CHLORINE;PLUMES;PREDICTIONS;TIME)/ModDate(D:20260330181016+03'00')/Producer(Adobe Acrobat 10.1.8 Paper Capture Plug-in)/SourceModified(D:20131007114359)/Subject(Toxic airborne contaminants, when inhaled, can cause adverse health effects. The U.S. EPA tabulates three Acute Exposure Guideline Levels AEGLs for predicting the onset of these adverse effects from specific length exposures to specific concentrations of toxic chemicals for a general population. Inhalation exposures in the real world, however, vary strongly in space and time and thus do not correspond to the specific durations and exposure levels tabulated by the EPA-a complication that EPA does not resolve. This report gives an accurate, science-based algorithm with fast, easy-to-use software to fill this gap. The software package, called EAGLE, predicts the onset of AEGL 1, 2 and 3 conditions for an arbitrary airborne agent time history supplied by the user. EAGLE can be used with field data, sensor data, wind tunnel measurements, Computational Fluid Dynamics models and rapid-response plume prediction software to convert agent time histories into meaningful actionable health effect predictions. It can also be used to predict the strong effects of realistic concentration fluctuations and to compare plume prediction models in a meaningful way.)/Title(Acute Exposure Guideline Levels (AEGLs) for Time Varying Toxic Plumes)/Filename(/pdf/TR/ADA610694.pdf)>>
+endobj
+1063 0 obj
+<</Type/XRef/Size 1064/Prev 1528736/Root 1 0 R/Info 7 0 R/ID[<17618BDA44D21C4F86764530DDEBE4F8><DDD984A1046F87AA3E0EA80189D63F0D>]/W[ 1 4 2]/Index[ 7 1 1005 1 1063 1]/Filter/FlateDecode/Length 25>>
+stream
+xœbdyÇÀÀ¤n‚©èÅ    ÿÿ
+endstream
+endobj
+startxref
+1530787
+%%EOF

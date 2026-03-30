@@ -62,7 +62,7 @@ NPM = heightmap .+ penalty_map
 NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
-    const METERS_TO_PIXELS = 0.2692   # 1250 m ≈ 336.5 px on map
+    const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 3989450875  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 5                                                        # Define the n_agents variable as 3
@@ -128,7 +128,22 @@ function move_along_precomputed_path!(agent::AgentEscapes, speed, dt)
 end
 
 
+#
+# Helper: true if position is within radius of any goal (TL and movement stop when true)
+const goal_radius = 10.0
+function at_goal(pos, dests, radius = goal_radius)
+    px, py = Float64(pos[1]), Float64(pos[2])
+    return minimum(hypot(px - d[1], py - d[2]) for d in dests) <= radius
+end
+
+
 function agent_step!(person, model)
+    if at_goal(person.pos, model.goal)
+        push!(person.pathX, person.pos[1])
+        push!(person.pathY, person.pos[2])
+        return
+    end
+
     grid_dims = size(penalty_map)
     i = clamp(Int(floor(person.pos[1])), 1, grid_dims[1])
     j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])

@@ -52,7 +52,7 @@ NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     # Time–speed correlation: distance per step = speed × dt (in space units).
     # Treat dt as "time per step" (e.g. 1 = 1 second). Map scale: 1250 m ≈ 336.5 px.
-    const METERS_TO_PIXELS = 0.2676   # 2500 m ≈ 669 px on map (so 1.35 m/s ≈ 1852 frames for 2500 m)
+    const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 50                                                        # Define the n_agents variable as 3

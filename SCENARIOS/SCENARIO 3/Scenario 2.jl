@@ -66,8 +66,6 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     n_agents = 1                                                        # Single agent for corner-to-corner run
-    # true = Euclidean straight line to nearest goal (ignores walkmap / A*)
-    straight_line_navigation = true
     agent_spawn_pixel = (10.0, 304.0)                                  # top-left white corner
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
@@ -107,7 +105,6 @@ begin
         dt = dt,
         speed_range = speed_range,
         goal = dests,
-        straight_line = straight_line_navigation,
     )
 end
 
@@ -118,47 +115,9 @@ function at_goal(pos, dests, radius = goal_radius)
     return minimum(hypot(px - d[1], py - d[2]) for d in dests) ≤ radius
 end
 
-function nearest_goal(pos, dests)
-    px, py = Float64(pos[1]), Float64(pos[2])
-    best = dests[1]
-    bestd = (px - best[1])^2 + (py - best[2])^2
-    for k in 2:length(dests)
-        d = dests[k]
-        dd = (px - d[1])^2 + (py - d[2])^2
-        if dd < bestd
-            bestd = dd
-            best = d
-        end
-    end
-    return best
-end
-
-"""Straight-line motion toward nearest goal at `speed_px_per_s` (px/s). Ignores walkmap."""
-function move_straight_line!(person, model, speed_px_per_s::Float64, dt::Float64)
-    speed_px_per_s ≤ 0 && return
-    tgt = nearest_goal(Tuple(person.pos), model.goal)
-    p = person.pos
-    px, py = Float64(p[1]), Float64(p[2])
-    dx, dy = tgt[1] - px, tgt[2] - py
-    dist = hypot(dx, dy)
-    dist < 1e-12 && return
-    step = speed_px_per_s * dt
-    if step ≥ dist
-        newpos = (tgt[1], tgt[2])
-    else
-        newpos = (px + (dx / dist) * step, py + (dy / dist) * step)
-    end
-    ext = spacesize(model)
-    newpos = (
-        clamp(newpos[1], 0.0, Float64(ext[1])),
-        clamp(newpos[2], 0.0, Float64(ext[2])),
-    )
-    move_agent!(person, newpos, model)
-end
-
-
 function agent_step!(person, model)
     if at_goal(person.pos, model.goal)
+        # Reached goal: stop both toxic accumulation and movement.
         push!(person.pathX, person.pos[1])
         push!(person.pathY, person.pos[2])
         return
@@ -188,11 +147,8 @@ function agent_step!(person, model)
 
     #display("Speed: $speed  -  ToxicLoad: $(person.toxicload)")
 
-    if model.straight_line
-        move_straight_line!(person, model, speed * METERS_TO_PIXELS, model.dt)
-    else
-        move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
-    end
+    # Use move_along_route! for A* pathfinding on the walkmap.
+    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -214,26 +170,6 @@ model = ABM(
   agent_step!  = agent_step!,
   model_step!  = model_step!
 )
-
-# Convert continuous world position (Float64, Float64) to grid cell (Int, Int)
-@inline function world_to_cell(p::Tuple{Float64,Float64}, dims::Tuple{Int,Int})
-    i = clamp(Int(floor(p[1])), 1, dims[1])
-    j = clamp(Int(floor(p[2])), 1, dims[2])
-    return (i, j)
-end
-
-@inline function world_to_cell(p::SVector{2,Float64}, dims::Tuple{Int,Int})
-    i = clamp(Int(floor(p[1])), 1, dims[1])
-    j = clamp(Int(floor(p[2])), 1, dims[2])
-    return (i, j)
-end
-
-
-function choose_best_path(paths::Vector{Vector{Tuple{Float64,Float64}}})
-    filter!(!isempty, paths)
-    isempty(paths) && return Tuple{Float64,Float64}[]
-    return argmin(p -> length(p), paths)
-end
 
 @time begin
     # Single agent at the specified pixel (x, y)
@@ -259,7 +195,7 @@ end
         [pos[2]],                     # pathY
         [0.0], [0.0], [0.0]
     )
-    model.straight_line || plan_best_route!(person, dests, model.pathfinderPM)
+    plan_best_route!(person, dests, model.pathfinderPM)
 end
 
 
@@ -409,6 +345,30 @@ function static_preplot!(ax, abmplot)
 end
 
 
+
+
+function static_preplot!(ax, abmplot)
+    # 1) Ξεπακετάρουμε το Observable
+    model = isa(abmplot, Observable)  ? abmplot[] :
+            hasproperty(abmplot, :model) ? abmplot.model[] :
+            abmplot
+
+    # 2) Σχεδιάζουμε τα goals
+    dests = model.goal
+    xs_g = getindex.(dests, 1)
+    ys_g = getindex.(dests, 2)
+    scatter!(ax, xs_g, ys_g; color = (:red, 50), marker = '●')
+
+    # 3) Σχεδιάζουμε για κάθε agent τη διαδρομή που έχει ήδη κάνει
+    for agent in allagents(model)
+        xs = agent.pathX
+        ys = agent.pathY
+        # π.χ. χρώμα ίδια με τον agent, πάχος γραμμής 2
+        lines!(ax, xs, ys; linewidth = 2, color = personcolor(agent))
+    end
+end
+
+
 function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλογα με το toxicload
     if person.toxicload >= 3.
         return :red
@@ -421,7 +381,7 @@ end
 
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    T = model.straight_line ? 2000 : 3100
+    const T = 3100
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
