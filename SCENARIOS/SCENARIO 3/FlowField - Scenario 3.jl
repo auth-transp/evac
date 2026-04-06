@@ -47,6 +47,15 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps 
         @assert size(cm_list[k]) == size(heightmap) "Concentration map $k size mismatch with heightmap"
     end
 
+    global CM_GLOBAL_MIN, CM_GLOBAL_MAX, CM_LEVELS
+    CM_GLOBAL_MIN = minimum(minimum.(cm_list))
+    CM_GLOBAL_MAX = maximum(maximum.(cm_list))
+    if CM_GLOBAL_MIN < CM_GLOBAL_MAX
+        CM_LEVELS = collect(range(CM_GLOBAL_MIN, CM_GLOBAL_MAX, length = 10))
+    else
+        CM_LEVELS = Float64[CM_GLOBAL_MIN]
+    end
+
     global penalty_map = copy(cm_list[1])
 end
 
@@ -341,6 +350,8 @@ function personcolor(person::AgentEscapes)
     end
 end
 
+agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
+
 
 @time begin
     const T = 1852
@@ -358,7 +369,8 @@ end
     cm_contour = contour!(
         ax, cm_obs;
         colormap = cgrad([:yellow, :orange, :red]),
-        levels = 10,
+        levels = CM_LEVELS,
+        colorrange = (CM_GLOBAL_MIN, CM_GLOBAL_MAX),
         linewidth = 1.5,
         alpha = 0.7,
     )
@@ -383,27 +395,34 @@ end
 
     xs0 = Float64[]
     ys0 = Float64[]
-    colors0 = Symbol[]
 
     for a in allagents(model)
         push!(xs0, a.pos[1])
         push!(ys0, a.pos[2])
-        push!(colors0, personcolor(a))
     end
+
+    colors0 = [agent_marker_color(a) for a in allagents(model)]
 
     posobs = Observable(Point2f.(xs0, ys0))
     colobs = Observable(colors0)
 
+    agents_vec = collect(allagents(model))
+    line_color_obs = [Observable(agent_marker_color(a)) for a in agents_vec]
     lines_plots = [
-        lines!(ax,
-               [a.pos[1]], [a.pos[2]];
-               color     = personcolor(a),
-               linewidth = 2)
-        for a in allagents(model)
+        lines!(
+            ax,
+            [a.pos[1]], [a.pos[2]];
+            color     = line_color_obs[i],
+            linewidth = 2,
+        )
+        for (i, a) in enumerate(agents_vec)
     ]
-    agent_scat = scatter!(ax, posobs;
-                          color      = colobs,
-                          markersize = 10)
+    agent_scat = scatter!(
+        ax, posobs;
+        color       = colobs,
+        markersize  = 10,
+        strokewidth = 0,
+    )
 
     df = DataFrame(
         step       = Int[],
@@ -423,8 +442,6 @@ end
     record(fig, video_file, 1:T; framerate=30) do frame
         frame_obs[] = frame
 
-        step!(model, 1)
-
         global current_map_idx
         new_idx = min(NUM_MAPS, Int(ceil(frame / frames_per_map)))
         if new_idx != current_map_idx
@@ -434,18 +451,20 @@ end
             println("Frame $frame: swapped to concentration map $current_map_idx (FlowField: no replanning).")
         end
 
+        step!(model, 1)
+
         cm_obs[] = penalty_map
 
-        for (i, a) in enumerate(allagents(model))
+        agents_now = collect(allagents(model))
+        for (i, a) in enumerate(agents_now)
             lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
+            line_color_obs[i][] = agent_marker_color(a)
         end
 
-        xs = [a.pos[1] for a in allagents(model)]
-        ys = [a.pos[2] for a in allagents(model)]
-        posobs[] = Point2f.(xs, ys)
-        colobs[] = [personcolor(a) for a in allagents(model)]
+        posobs[] = [Point2f(a.pos[1], a.pos[2]) for a in agents_now]
+        colobs[] = [agent_marker_color(a) for a in agents_now]
 
-        for a in allagents(model)
+        for a in agents_now
             push!(df, (
                 frame,
                 a.id,
@@ -541,10 +560,7 @@ begin
     y0      = Observable([0.0])
     y3      = Observable([0.0])
 
-    inner_cols = [ c for x in centers_inner for c in
-        (x < 1.0  ? (:dodgerblue,) :
-        x < 2.0  ? (:gold,)       :
-                 (:orange,)) ]
+    inner_cols = [Makie.to_color(x < 1.0 ? :green : :orange) for x in centers_inner]
 
     barplot!(ax, centers_inner, y_inner; width = bin_w_inner, color = inner_cols, strokewidth = 0)
     barplot!(ax, [x0_pos], y0; width = bin_w_edge, color = :gray35,  strokewidth = 0)
@@ -554,8 +570,8 @@ begin
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])
-        count0       = count(==(0.0), tl)
-        count3       = count(==(3.0), tl)
+        count0       = count(v -> v <= 1e-9 || isapprox(v, 0.0; atol = 1e-6), tl)
+        count3       = count(v -> v >= 3.0 - 1e-9 || isapprox(v, 3.0; atol = 1e-4), tl)
         counts_inner = bin_counts_open(tl, edges_inner)
         y_inner[] = Float64.(counts_inner)
         y0[]      = [Float64(count0)]

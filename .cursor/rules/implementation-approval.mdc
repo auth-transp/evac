@@ -1,0 +1,10 @@
+---
+description: Ask before implementing; state file targets; scope changes to current script unless told otherwise
+alwaysApply: true
+---
+
+# Implementation workflow
+
+- **Before writing or editing code** for something we have discussed: first **ask** whether it is okay to proceed, and **list the exact file path(s)** (and briefly what will change in each). Do **not** apply edits until the user approves (unless they already said “go ahead” / “implement it” in the same turn).
+- **Scope:** Unless the user explicitly asks to touch multiple files, other folders, or the whole repo, **only modify the script they are focused on** or the **last file we changed** in this session. If “current script” is ambiguous, confirm which path they mean.
+- This does **not** block read-only exploration (searching, explaining, or proposing plans without editing).

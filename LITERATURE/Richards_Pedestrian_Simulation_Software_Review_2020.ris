@@ -1,0 +1,10 @@
+TY  - RPRT
+TI  - Pedestrian Simulation Software Review
+AU  - Richards, Thomas
+CY  - Leeds, United Kingdom
+PB  - University of Leeds, Leeds Institute for Data Science
+PY  - 2020
+DA  - 2020/03/01
+UR  - https://urban-analytics.github.io/dust/docs/ped_sim_review.html
+N1  - Data Science Intern report (DUST / Urban Analytics). PDF (with figures): https://urban-analytics.github.io/dust/docs/ped_sim_review.pdf. Announcement: https://urban-analytics.github.io/dust/2020/03/PedSimReview.html. Scope: review of agent-based software for pedestrian/crowd simulation and data assimilation at runtime.
+ER  -

@@ -32,15 +32,15 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
 end
 
 
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM10)
+begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM8)
     # heightmap (unchanged)
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
     heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
 
-    # --- Load all concentration maps 1..10 as Float64 arrays ---
-    const NUM_CMS = 10
+    # --- Load all concentration maps 1..8 as Float64 arrays ---
+    const NUM_CMS = 8
     cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)
     for k in 1:NUM_CMS
         fn = joinpath("Concentration Maps", string(k) * ".bmp")
@@ -64,8 +64,8 @@ NPM_int = round.(Int, NPM)   # convert to Int for PenaltyMap
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
-    seed = 3989450875  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 5                                                        # Define the n_agents variable as 3
+    seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    n_agents = 50                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -229,11 +229,11 @@ end
 
 
 function setupToxic()                                               # Define the setupToxic function
-    Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33] #min                # Define the Atime array as a 1x6 matrix                                    # Initialization of the 5 standard AEGL exposure times
+    Atime = [0.0, 2.0, 5.0, 8.0, 15.0, 30.0] #min                # Define the Atime array as a 1x6 matrix                                    # Initialization of the 5 standard AEGL exposure times
     Arho = zeros(3, 6)                                              # Define the Arho array as a 3x6 matrix                                     # the concentration of the three symptoms compared to the AEGL concentrations
-    Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]                   # Define the Arho array for the first row and columns 2 to 6                # odor
-    Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]         # Define the Arho array for the second row and columns 2 to 6               # irritation
-    Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm    # Define the Arho array for the third row and columns 2 to 6                # edema
+    Arho[1, 2:6] = [2.87, 2.33, 2.09, 1.81, 1.55]                   # Define the Arho array for the first row and columns 2 to 6                # odor
+    Arho[2, 2:6] = [202.38, 164.38, 147.74, 128.10, 109.45]         # Define the Arho array for the second row and columns 2 to 6               # irritation
+    Arho[3, 2:6] = [286.71, 232.87, 209.30, 181.47, 155.05] #ppm    # Define the Arho array for the third row and columns 2 to 6                # edema
     MW = 34 #Molecular weight of H2S in g/mol
     Arho *= MW/24.04 #mg/m^3                                        # Multiply the Arho array by the molecular weight of H2S divided by 24.04
     Arho = Arho'                                                    # Transpose the Arho array 
@@ -311,6 +311,8 @@ function setupToxic()                                               # Define the
 end
 
 Balpha, Btime, Brho = setupToxic()
+# Suffix for exports: new AEGL tables in setupToxic() + half (“1/2”) CM context; underscore in tag avoids `/` in filenames
+run_export_tag = "newAEGL_1_2CM_uncappedTL"
 
 
 
@@ -343,9 +345,6 @@ function update_toxic_load(Ct, TLcurrent, dt)
     end
         #TL[iAg, :] .= sum(TL .> 1) .+ TL[min(3, sum(TL .> 1) + 1)] .* (1 - (TL[3] > 1));
         #TL[iAg, :] .= person.toxicload;
-    TL[1] = TL[1] > 1.0 ? 1.0 : TL[1]
-    TL[2] = TL[2] > 1. ? 1.0 : TL[2]
-    TL[3] = TL[3] > 1. ? 1.0 : TL[3]
 
     return TL
 end
@@ -417,8 +416,9 @@ end
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 1852
-    frames_per_map = 60
-    const NUM_MAPS = 10
+    # Simulation time t matches the on-screen counter: t = (frame - 1) * dt. Switch CMs at these t (s).
+    const CM_SWITCH_TIMES = Float64[0, 9, 48, 85, 100, 120, 215, 300]
+    const NUM_MAPS = length(CM_SWITCH_TIMES)
 
 
     # -- Στήσιμο Figure & Axis --
@@ -431,9 +431,21 @@ end
     
     # --- Concentration Map visualization (contour only, overlay on heightmap) ---
     cm_obs = Observable(penalty_map)
+    # Makie errors if min(z)==max(z) (degenerate colorrange). Widen slightly when flat.
+    cm_colorrange = @lift let z = $cm_obs
+        m = minimum(z)
+        M = maximum(z)
+        if m == M
+            δ = max(1.0, abs(m) * 1e-6)
+            (Float32(m - δ), Float32(M + δ))
+        else
+            (Float32(m), Float32(M))
+        end
+    end
     cm_contour = contour!(
         ax, cm_obs;
         colormap = cgrad([:yellow, :orange, :red]),
+        colorrange = cm_colorrange,
         levels = 10,
         linewidth = 1.5,
         alpha = 0.7,
@@ -485,6 +497,18 @@ end
                           color      = colobs,
                           markersize = 10)
 
+    agent_id_labels = [string(a.id) for a in allagents(model)]
+    text!(
+        ax, posobs;
+        text       = agent_id_labels,
+        fontsize   = 7,
+        align      = (:left, :center),
+        offset     = (5, 0),
+        color      = :black,
+        strokewidth = 0.75,
+        strokecolor = :white,
+    )
+
     # -- Προετοιμασία DataFrame για θέση & toxicload ανά βήμα --
     df = DataFrame(
         step       = Int[],
@@ -495,8 +519,8 @@ end
     )
 
 
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code).mp4"
-    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code).csv"  # added
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).mp4"
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).csv"  # added
 
     # keep a variable for the currently active map index
     current_map_idx = 1
@@ -542,9 +566,10 @@ end
         # 1) step the model normally (simulation time only)
         simulation_time[] += @elapsed step!(model, 1)
 
-        # 2) determine which CM index should be active on this frame
+        # 2) determine which CM index should be active on this frame (1..NUM_MAPS)
         global current_map_idx  # Declare `current_map_idx` as global
-        new_idx = min(NUM_MAPS, Int(ceil(frame / frames_per_map)))
+        t_sim = (frame - 1) * dt
+        new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)
 
         if new_idx != current_map_idx
             current_map_idx = new_idx
@@ -609,7 +634,7 @@ end
             ))
         end
 
-        # 5) stop condition: after map 10 completes (frame == NUM_MAPS*frames_per_map) the record ends automatically
+        # 5) record runs for T frames (fixed horizon)
     end
 
     println("Το animation σώθηκε ως $video_file")
@@ -633,10 +658,10 @@ begin
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
-        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)\\.csv\$")
+        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *DStarLite_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -726,7 +751,7 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code).mp4")
+    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])

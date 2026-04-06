@@ -81,6 +81,8 @@ end
 
     ## Note that the dimensions of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
+    # ContinuousSpace requires extent to be exactly divisible by spacing in each dimension.
+    # Use a nearby compatible spacing (0.25 px) instead of METERS_TO_PIXELS (~0.2893 px).
     space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
 

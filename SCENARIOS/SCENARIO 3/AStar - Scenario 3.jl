@@ -49,6 +49,15 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps 
         @assert size(cm_list[k]) == size(heightmap) "Concentration map $k size mismatch with heightmap"
     end
 
+    global CM_GLOBAL_MIN, CM_GLOBAL_MAX, CM_LEVELS
+    CM_GLOBAL_MIN = minimum(minimum.(cm_list))
+    CM_GLOBAL_MAX = maximum(maximum.(cm_list))
+    if CM_GLOBAL_MIN < CM_GLOBAL_MAX
+        CM_LEVELS = collect(range(CM_GLOBAL_MIN, CM_GLOBAL_MAX, length = 10))
+    else
+        CM_LEVELS = Float64[CM_GLOBAL_MIN]
+    end
+
     # start with first CM
     global penalty_map = copy(cm_list[1])
 end
@@ -360,6 +369,8 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
     end
 end
 
+agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
+
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 1852
@@ -378,7 +389,8 @@ const NUM_MAPS = 10
     cm_contour = contour!(
         ax, cm_obs;
         colormap = cgrad([:yellow, :orange, :red]),
-        levels = 10,
+        levels = CM_LEVELS,
+        colorrange = (CM_GLOBAL_MIN, CM_GLOBAL_MAX),
         linewidth = 1.5,
         alpha = 0.7,
     )
@@ -407,27 +419,34 @@ const NUM_MAPS = 10
 
     xs0 = Float64[]  # Initialize empty arrays for positions
     ys0 = Float64[]
-    colors0 = Symbol[]  # Initialize empty array for colors
 
     for a in allagents(model)
         push!(xs0, a.pos[1])
         push!(ys0, a.pos[2])
-        push!(colors0, personcolor(a))
     end
+
+    colors0 = [agent_marker_color(a) for a in allagents(model)]
 
     posobs = Observable(Point2f.(xs0, ys0))
     colobs = Observable(colors0)
 
+    agents_vec = collect(allagents(model))
+    line_color_obs = [Observable(agent_marker_color(a)) for a in agents_vec]
     lines_plots = [
-        lines!(ax,
-               [a.pos[1]], [a.pos[2]];
-               color     = personcolor(a),
-               linewidth = 2)
-        for a in allagents(model)
+        lines!(
+            ax,
+            [a.pos[1]], [a.pos[2]];
+            color     = line_color_obs[i],
+            linewidth = 2,
+        )
+        for (i, a) in enumerate(agents_vec)
     ]
-    agent_scat = scatter!(ax, posobs;
-                          color      = colobs,
-                          markersize = 10)
+    agent_scat = scatter!(
+        ax, posobs;
+        color       = colobs,
+        markersize  = 10,
+        strokewidth = 0,
+    )
 
     # -- Προετοιμασία DataFrame για θέση & toxicload ανά βήμα --
     df = DataFrame(
@@ -452,10 +471,7 @@ record(fig, video_file, 1:T; framerate=30) do frame
     # update frame counter observable
     frame_obs[] = frame
 
-    # 1) step the model normally
-    step!(model, 1)
-
-    # 2) determine which CM index should be active on this frame
+    # 1) Swap CM before step! so simulation and video match the same map index
     global current_map_idx, replanning_time  # Declare as global
     new_idx = min(NUM_MAPS, Int(ceil(frame / frames_per_map)))
     if new_idx != current_map_idx
@@ -485,21 +501,24 @@ record(fig, video_file, 1:T; framerate=30) do frame
         println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths (updated penalty map in-place).")
     end
 
+    # 2) step the model
+    step!(model, 1)
+
     # Update concentration map visualization
     cm_obs[] = penalty_map
 
-    # 3) update trails/visuals as before
-    for (i, a) in enumerate(allagents(model))
+    # 3) update trails/visuals (paths + TL-dependent colors for video)
+    agents_now = collect(allagents(model))
+    for (i, a) in enumerate(agents_now)
         lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
+        line_color_obs[i][] = agent_marker_color(a)
     end
 
-    xs = [a.pos[1] for a in allagents(model)]
-    ys = [a.pos[2] for a in allagents(model)]
-    posobs[] = Point2f.(xs, ys)
-    colobs[] = [personcolor(a) for a in allagents(model)]
+    posobs[] = [Point2f(a.pos[1], a.pos[2]) for a in agents_now]
+    colobs[] = [agent_marker_color(a) for a in agents_now]
 
     # 4) collect data
-    for a in allagents(model)
+    for a in agents_now
         push!(df, (
             frame,
             a.id,
@@ -613,11 +632,8 @@ begin
     y0      = Observable([0.0])                                  # bin για 0
     y3      = Observable([0.0])                                  # bin για 3
 
-    # Χρώματα για τα εσωτερικά bins ανά TL ζώνη (με βάση το center του bin)
-    inner_cols = [ c for x in centers_inner for c in
-        (x < 1.0  ? (:dodgerblue,) :          # (0,1)
-        x < 2.0  ? (:gold,)       :          # [1,2)
-                 (:orange,)) ]            # [2,3)
+    # Bar colors aligned with map agents (personcolor): TL≤1 → green, 1<TL<3 → orange
+    inner_cols = [Makie.to_color(x < 1.0 ? :green : :orange) for x in centers_inner]
 
     # εσωτερικές μπάρες (vector χρωμάτων)
     barplot!(ax, centers_inner, y_inner; width = bin_w_inner, color = inner_cols, strokewidth = 0)
@@ -632,8 +648,8 @@ begin
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])
 
-        count0       = count(==(0.0), tl)                 # ακριβώς 0
-        count3       = count(==(3.0), tl)                 # ακριβώς 3
+        count0       = count(v -> v <= 1e-9 || isapprox(v, 0.0; atol = 1e-6), tl)
+        count3       = count(v -> v >= 3.0 - 1e-9 || isapprox(v, 3.0; atol = 1e-4), tl)
         counts_inner = bin_counts_open(tl, edges_inner)   # μόνο (0,3) ανά 0.5
 
         y_inner[] = Float64.(counts_inner)
