@@ -23,19 +23,19 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
     TL3::Vector{Float64}
 end
 
-begin   # Φόρτωση heightmap και concentration maps 1..10
+begin   # Φόρτωση heightmap και concentration maps 1..8
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
     heightmap = 255 .- heightmap
 
-    const NUM_CMS = 10
+    const NUM_CMS = 8
     cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)
     for k in 1:NUM_CMS
         fn = joinpath("Concentration Maps", string(k) * ".bmp")
         img = load(fn)
         img = permutedims(channelview(img), [2,3,1])[:,:,1]
-        cm_list[k] = convert.(Float64, img) .* 500.0
+        cm_list[k] = convert.(Float64, img) .* 255.0
     end
     for k in 1:NUM_CMS
         @assert size(cm_list[k]) == size(heightmap) "Concentration map $k size mismatch with heightmap"
@@ -49,7 +49,7 @@ NPM_int = round.(Int, NPM)
 begin   # Παράμετροι μοντέλου
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.0
-    n_agents = 50
+    n_agents = 100
     toxicity_rate = 0.07
     age_range = (22, 60)
     speed_range = (4.0, 7.0)
@@ -178,11 +178,11 @@ begin
 end
 
 function setupToxic()
-    Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33]
+    Atime = [0.0, 2.0, 5.0, 8.0, 15.0, 30.0]
     Arho = zeros(3, 6)
-    Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]
-    Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]
-    Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71]
+    Arho[1, 2:6] = [2.87, 2.33, 2.09, 1.81, 1.55]
+    Arho[2, 2:6] = [202.38, 164.38, 147.74, 128.10, 109.45]
+    Arho[3, 2:6] = [286.71, 232.87, 209.30, 181.47, 155.05]
     MW = 34
     Arho *= MW/24.04
     Arho = Arho'
@@ -249,6 +249,9 @@ end
 
 Balpha, Btime, Brho = setupToxic()
 
+# Simulation time t matches step index: t = (step_idx - 1) * dt. Switch CMs at these t (s).
+const CM_SWITCH_TIMES = Float64[0, 9, 48, 85, 100, 120, 215, 300]
+
 function update_toxic_load(Ct, TLcurrent, dt)
     TL = TLcurrent
     TL_rate = 0.0
@@ -270,9 +273,6 @@ function update_toxic_load(Ct, TLcurrent, dt)
         end
         TL[k] = TL[k] .+ TL_rate * dt
     end
-    TL[1] = TL[1] > 1.0 ? 1.0 : TL[1]
-    TL[2] = TL[2] > 1. ? 1.0 : TL[2]
-    TL[3] = TL[3] > 1. ? 1.0 : TL[3]
     return TL
 end
 
@@ -313,7 +313,7 @@ const BENCHMARK_T_STEPS = 1852
 
 Build a fresh model with random seed, add agents, time the initial D* Lite
 planning (planner init + first path extraction), then run BENCHMARK_T_STEPS
-with dynamic concentration maps (1→10) while timing all incremental replanning
+with dynamic concentration maps (1→8) while timing all incremental replanning
 work separately from pure simulation stepping. Returns:
 
 - initial_pf_time_s: time spent on initial pathfinding (s)
@@ -397,8 +397,7 @@ function run_one_benchmark()
 
     replan_time = 0.0
     sim_step_time = 0.0
-    NUM_MAPS = 10
-    frames_per_map = 60
+    NUM_MAPS = length(CM_SWITCH_TIMES)
 
     # Ensure global penalty_map and local_NPM_int start from CM1 for this run
     current_map_idx = 1
@@ -409,7 +408,8 @@ function run_one_benchmark()
 
     for step_idx in 1:BENCHMARK_T_STEPS
         sim_step_time += @elapsed step!(model_run, 1)
-        new_idx = min(NUM_MAPS, Int(ceil(step_idx / frames_per_map)))
+        t_sim = (step_idx - 1) * dt
+        new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)
         if new_idx != current_map_idx
             current_map_idx = new_idx
             replan_time += @elapsed begin

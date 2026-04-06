@@ -192,11 +192,11 @@ end
 
 
 function setupToxic()                                               # Define the setupToxic function
-    Atime = [0.0, 0.17, 0.83, 1.67, 4.17, 8.33] #min                # Initialization of the 5 standard AEGL exposure times
+    Atime = [0.0, 2.0, 5.0, 8.0, 15.0, 30.0] #min                # Initialization of the 5 standard AEGL exposure times
     Arho = zeros(3, 6)                                              # the concentration of the three symptoms compared to the AEGL concentrations
-    Arho[1, 2:6] = [4.85, 4.23, 4.17, 4.06, 3.82]                   # odor
-    Arho[2, 2:6] = [180.79, 157.56, 155.43, 151.37, 142.48]         # irritation
-    Arho[3, 2:6] = [485.62, 423.22, 417.49, 406.59, 382.71] #ppm    # edema
+    Arho[1, 2:6] = [2.87, 2.33, 2.09, 1.81, 1.55]                   # odor
+    Arho[2, 2:6] = [202.38, 164.38, 147.74, 128.10, 109.45]         # irritation
+    Arho[3, 2:6] = [286.71, 232.87, 209.30, 181.47, 155.05] #ppm    # edema
     MW = 34                                                         # Molecular weight of H2S in g/mol
     Arho *= MW/24.04 #mg/m^3                                        # Multiply the Arho array by the molecular weight of H2S divided by 24.04
     Arho = Arho'                                                    # Transpose the Arho array 
@@ -306,10 +306,6 @@ function update_toxic_load(Ct, TLcurrent, dt)
     end
         #TL[iAg, :] .= sum(TL .> 1) .+ TL[min(3, sum(TL .> 1) + 1)] .* (1 - (TL[3] > 1));
         #TL[iAg, :] .= person.toxicload;
-    TL[1] = TL[1] > 1.0 ? 1.0 : TL[1]
-    TL[2] = TL[2] > 1. ? 1.0 : TL[2]
-    TL[3] = TL[3] > 1. ? 1.0 : TL[3]
-
     return TL
 end
 
