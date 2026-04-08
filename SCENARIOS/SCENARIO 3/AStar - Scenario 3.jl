@@ -4,6 +4,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using CSV
     using CairoMakie
     using DataFrames
+    using Dates
     using FileIO: load
     using ImageMagick
     using Images
@@ -70,6 +71,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 50                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
@@ -478,8 +480,8 @@ agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
     )
 
 
-video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).mp4"
-csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).csv"  # added
+video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).mp4"
+csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).csv"  # added
 
 # keep a variable for the currently active map index
 current_map_idx = 1
@@ -574,10 +576,10 @@ begin
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *_tl_agents_*.csv
-        pattern = Regex("^AStar_SCENARIO_3_.*_$(cost_metric_str)\\.csv\$")
+        pattern = Regex("^AStar_SCENARIO_3_.*_$(cost_metric_str)_.*\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *AStar_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -664,7 +666,7 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "AStar_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str).mp4")
+    out_file = joinpath(folder, "AStar_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(run_timestamp).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])

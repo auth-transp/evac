@@ -8,6 +8,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using InteractiveDynamics             
     using Images                    
     using DataFrames           
+    using Dates
     using Statistics
     using CairoMakie
     using DelimitedFiles
@@ -43,6 +44,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 3                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
@@ -373,7 +375,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO 1/Simulation Results/SCENARIO_1_$(seed).mp4"
+    video_file = "SCENARIO 1/Simulation Results/SCENARIO_1_$(seed)_$(run_timestamp).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -407,7 +409,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO 1/Simulation Results/SCENARIO_1_$(seed).csv"
+    csv_file = "SCENARIO 1/Simulation Results/SCENARIO_1_$(seed)_$(run_timestamp).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end

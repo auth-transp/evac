@@ -4,6 +4,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using CSV
     using CairoMakie
     using DataFrames
+    using Dates
     using FileIO: load
     using ImageMagick
     using Images
@@ -32,15 +33,15 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
 end
 
 
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM8)
+begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM7)
     # heightmap (unchanged)
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
     heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
 
-    # --- Load all concentration maps 1..8 as Float64 arrays ---
-    const NUM_CMS = 8
+    # --- Load all concentration maps 1..7 as Float64 arrays ---
+    const NUM_CMS = 7
     cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)
     for k in 1:NUM_CMS
         fn = joinpath("Concentration Maps", string(k) * ".bmp")
@@ -311,8 +312,9 @@ function setupToxic()                                               # Define the
 end
 
 Balpha, Btime, Brho = setupToxic()
-# Suffix for exports: new AEGL tables in setupToxic() + half (“1/2”) CM context; underscore in tag avoids `/` in filenames
-run_export_tag = "newAEGL_1_2CM_uncappedTL"
+# Suffix for exports: new AEGL tables in setupToxic() + 0.5 CM context
+run_export_tag = "newAEGL_0.5CM_uncappedTL"
+run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
 
 
 
@@ -416,9 +418,15 @@ end
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 1852
-    # Simulation time t matches the on-screen counter: t = (frame - 1) * dt. Switch CMs at these t (s).
-    const CM_SWITCH_TIMES = Float64[0, 9, 48, 85, 100, 120, 215, 300]
-    const NUM_MAPS = length(CM_SWITCH_TIMES)
+    # Spread CM transitions evenly over the first 8/10 of the simulation time.
+    # Time counter is t = (frame - 1) * dt.
+    const CM_ACTIVE_FRACTION = 0.8
+    const NUM_MAPS = NUM_CMS
+    const CM_SWITCH_TIMES = collect(range(
+        0.0,
+        stop = CM_ACTIVE_FRACTION * ((T - 1) * dt),
+        length = NUM_MAPS,
+    ))
 
 
     # -- Στήσιμο Figure & Axis --
@@ -519,8 +527,8 @@ end
     )
 
 
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).mp4"
-    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).csv"  # added
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"  # added
 
     # keep a variable for the currently active map index
     current_map_idx = 1
@@ -658,10 +666,10 @@ begin
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
-        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)\\.csv\$")
+        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *DStarLite_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -751,7 +759,7 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag).mp4")
+    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])

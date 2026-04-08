@@ -1,6 +1,7 @@
 begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
     using Agents.Pathfinding
+    using Dates
     using Random
     using ImageMagick
     using FileIO: load
@@ -388,7 +389,8 @@ avg_simulation_final  = sum(simulation_times) / n_runs
 avg_total_tl_final    = sum(total_tls) / n_runs
 
 # --- Write Excel: per-run times + summary averages ---
-xlsx_path = "SCENARIOS/SCENARIO 2/Simulation Results/Scenario_2_Benchmarking_$(n_agents).xlsx"
+run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
+xlsx_path = "SCENARIOS/SCENARIO 2/Simulation Results/Scenario_2_Benchmarking_$(n_agents)_$(run_timestamp).xlsx"
 run_ids = collect(1:n_runs)
 columns_data = [run_ids, seeds, pathfinding_times, simulation_times, total_tls]
 column_names = ["Run", "Seed", "PathfindingTime_s", "SimulationTime_s", "Total TL"]

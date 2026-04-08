@@ -8,6 +8,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using InteractiveDynamics             
     using Images                    
     using DataFrames           
+    using Dates
     using Statistics
     using CairoMakie
     using DelimitedFiles
@@ -54,6 +55,7 @@ begin   # Ξ‘ΟΟ‡ΞΉΞΊΞΏΟ€ΞΏΞ―Ξ·ΟƒΞ· Ο„Ο‰Ξ½ Ο
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 1                                                         # Single agent for testing
     # Spawn: top-left white corner of grey site (x, y); goal is bottom-left white corner
     agent_spawn_pixel = (10.0, 304.0)
@@ -401,7 +403,7 @@ begin   # Ξ”Ξ·ΞΌΞΉΞΏΟ…ΟΞ³Ξ―Ξ± animation ΞΌΞµ trails 
     )
 
     # -- ΞΞ½Ξ±ΟΞΎΞ· record: video ΞΊΞ±ΞΉ ΟƒΟ…Ξ»Ξ»ΞΏΞ³Ξ® Ξ΄ΞµΞ΄ΞΏΞΌΞ­Ξ½Ο‰Ξ½ Ο„Ξ±Ο…Ο„ΟΟ‡ΟΞΏΞ½Ξ± --
-    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed).mp4"
+    video_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed)_$(run_timestamp).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ΞµΞ½Ξ·ΞΌΞ­ΟΟ‰ΟƒΞ· Ο„ΞΏΟ… frame counter
         frame_obs[] = frame
@@ -434,7 +436,7 @@ begin   # Ξ”Ξ·ΞΌΞΉΞΏΟ…ΟΞ³Ξ―Ξ± animation ΞΌΞµ trails 
     println("Ξ¤ΞΏ animation ΟƒΟΞΈΞ·ΞΊΞµ Ο‰Ο‚ $video_file")
 
     # -- Ξ•ΞΎΞ±Ξ³Ο‰Ξ³Ξ® CSV ΞΌΞµ ΞΈΞ­ΟƒΞ· & toxicload Ο„Ο‰Ξ½ agents --
-    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed).csv"
+    csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed)_$(run_timestamp).csv"
     CSV.write(csv_file, df)
     println("Ξ¤Ξ± Ξ΄ΞµΞ΄ΞΏΞΌΞ­Ξ½Ξ± ΞΈΞ­ΟƒΞ·Ο‚ & toxicload Ξ±Ο€ΞΏΞΈΞ·ΞΊΞµΟΟ„Ξ·ΞΊΞ±Ξ½ Ο‰Ο‚ $csv_file")
 end

@@ -5,6 +5,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using ColorTypes
     using CSV
     using DataFrames
+    using Dates
     using DelimitedFiles
     using FileIO: load
     using ImageMagick
@@ -52,6 +53,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 50                                                       # Define the n_agents variable as 100
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
@@ -381,7 +383,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     )
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
-    video_file = "SCENARIO 2.3 (Contest) (hand-drawn PMs)/Simulation Results/SCENARIO_2.3_$(seed).mp4"
+    video_file = "SCENARIO 2.3 (Contest) (hand-drawn PMs)/Simulation Results/SCENARIO_2.3_$(seed)_$(run_timestamp).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -414,7 +416,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIO 2.3 (Contest) (hand-drawn PMs)/Simulation Results/SCENARIO_2.3_$(seed).csv"
+    csv_file = "SCENARIO 2.3 (Contest) (hand-drawn PMs)/Simulation Results/SCENARIO_2.3_$(seed)_$(run_timestamp).csv"
     CSV.write(csv_file, df)
     CSV.write(joinpath("SCENARIO 2.3 (Contest) (hand-drawn PMs)", "Simulation Results", "SCENARIO_2.3_tl_agents_$(seed).csv"),
           select(df, [:step, :agent_id, :toxicload]))
@@ -522,7 +524,7 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "SCENARIO_2.3_hist_$(seed_str).mp4")
+    out_file = joinpath(folder, "SCENARIO_2.3_hist_$(seed_str)_$(run_timestamp).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])

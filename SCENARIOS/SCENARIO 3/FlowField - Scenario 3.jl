@@ -4,6 +4,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using CSV
     using CairoMakie
     using DataFrames
+    using Dates
     using FileIO: load
     using ImageMagick
     using Images
@@ -67,6 +68,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.
     seed = 123
+    run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 50
     toxicity_rate = 0.07
     age_range = (22,60)
@@ -452,8 +454,8 @@ agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
         toxicload  = Float64[]
     )
 
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).mp4"
-    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).csv"
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).mp4"
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).csv"
 
     current_map_idx = 1
     replanning_time = 0.0
@@ -514,9 +516,9 @@ begin
     seed_str = @isdefined(seed) ? string(seed) : nothing
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
-        pattern = Regex("^FlowField_SCENARIO_3_.*_$(cost_metric_str)\\.csv\$")
+        pattern = Regex("^FlowField_SCENARIO_3_.*_$(cost_metric_str)_.*\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *FlowField_SCENARIO_3_*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -587,7 +589,7 @@ begin
     barplot!(ax, [x0_pos], y0; width = bin_w_edge, color = :gray35,  strokewidth = 0)
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
-    out_file = joinpath(folder, "FlowField_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str).mp4")
+    out_file = joinpath(folder, "FlowField_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(run_timestamp).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])

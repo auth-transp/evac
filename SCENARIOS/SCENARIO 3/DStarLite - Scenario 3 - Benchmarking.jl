@@ -1,6 +1,7 @@
 begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
     using Agents.Pathfinding
+    using Dates
     using FileIO: load
     using XLSX
     using ImageMagick
@@ -23,13 +24,13 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
     TL3::Vector{Float64}
 end
 
-begin   # Φόρτωση heightmap και concentration maps 1..8
+begin   # Φόρτωση heightmap και concentration maps 1..7
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
     heightmap = 255 .- heightmap
 
-    const NUM_CMS = 8
+    const NUM_CMS = 7
     cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)
     for k in 1:NUM_CMS
         fn = joinpath("Concentration Maps", string(k) * ".bmp")
@@ -49,7 +50,7 @@ NPM_int = round.(Int, NPM)
 begin   # Παράμετροι μοντέλου
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.0
-    n_agents = 100
+    n_agents = 5
     toxicity_rate = 0.07
     age_range = (22, 60)
     speed_range = (4.0, 7.0)
@@ -249,9 +250,6 @@ end
 
 Balpha, Btime, Brho = setupToxic()
 
-# Simulation time t matches step index: t = (step_idx - 1) * dt. Switch CMs at these t (s).
-const CM_SWITCH_TIMES = Float64[0, 9, 48, 85, 100, 120, 215, 300]
-
 function update_toxic_load(Ct, TLcurrent, dt)
     TL = TLcurrent
     TL_rate = 0.0
@@ -303,24 +301,34 @@ function choose_best_path(paths::Vector{Vector{Tuple{Int,Int}}})
 end
 
 # --- Benchmark parameters (like Scenario 2 Benchmarking) ---
-const BENCHMARK_MAX_RUNS = 100
-const BENCHMARK_CONVERGENCE_PCT = 0.01
-const BENCHMARK_MIN_RUNS = 50
-const BENCHMARK_T_STEPS = 1852
+const BENCHMARK_MAX_RUNS = 5
+const BENCHMARK_T_STEPS = 2500
+const BENCHMARK_TL_CAP_PER_AGENT = 3.0
+
+# Spread CM transitions evenly over the first 8/10 of the benchmark horizon (same idea as Scenario 3).
+# t = (step_idx - 1) * dt
+const CM_ACTIVE_FRACTION_BENCH = 0.8
+const CM_SWITCH_TIMES = collect(range(
+    0.0,
+    stop = CM_ACTIVE_FRACTION_BENCH * ((BENCHMARK_T_STEPS - 1) * dt),
+    length = NUM_CMS,
+))
 
 """
-    run_one_benchmark() -> (initial_pf_time_s, incremental_pf_time_s, simulation_time_s, seed, total_TL)
+    run_one_benchmark() -> (initial_pf, incremental_pf, sim_time, seed, sum_TL_capped, per_agent_TL_capped, agent_ids)
 
 Build a fresh model with random seed, add agents, time the initial D* Lite
 planning (planner init + first path extraction), then run BENCHMARK_T_STEPS
-with dynamic concentration maps (1→8) while timing all incremental replanning
+with dynamic concentration maps (1→NUM_CMS) while timing all incremental replanning
 work separately from pure simulation stepping. Returns:
 
 - initial_pf_time_s: time spent on initial pathfinding (s)
 - incremental_pf_time_s: time spent on all incremental replans (s)
 - simulation_time_s: time spent stepping the model (s)
 - seed: RNG seed for this run
-- total_TL: total toxic load across agents at the end of the run
+- sum_TL_capped: sum of `min(toxicload, BENCHMARK_TL_CAP_PER_AGENT)` per agent
+- per_agent_TL_capped: same cap per agent (sorted by agent `id`)
+- agent_ids: agent ids matching `per_agent_TL_capped`
 
 No CSV/video is written from this function; higher-level code handles aggregation/Excel.
 """
@@ -439,13 +447,18 @@ function run_one_benchmark()
     incremental_pf_time = replan_time
     simulation_time  = sim_step_time
 
-    # Sum toxic load across all agents at the end of the run
-    total_TL = 0.0
-    for a in allagents(model_run)
-        total_TL += a.toxicload
+    agents_sorted = sort(collect(allagents(model_run)), by = a -> a.id)
+    sum_TL_capped = 0.0
+    per_agent_TL_capped = Float64[]
+    agent_ids = Int[]
+    for a in agents_sorted
+        tl_cap = min(a.toxicload, BENCHMARK_TL_CAP_PER_AGENT)
+        sum_TL_capped += tl_cap
+        push!(per_agent_TL_capped, tl_cap)
+        push!(agent_ids, a.id)
     end
 
-    return initial_pf_time, incremental_pf_time, simulation_time, seed, total_TL
+    return initial_pf_time, incremental_pf_time, simulation_time, seed, sum_TL_capped, per_agent_TL_capped, agent_ids
 end
 
 """
@@ -454,8 +467,8 @@ Profile one benchmark run. After running, call Profile.print() or your profiler 
 """
 function profile_one_benchmark()
     Profile.clear()
-    init_t, incr_t, sim_t, run_seed, total_TL = run_one_benchmark()
-    println("Profiled run (seed=$run_seed): initial PF = $(round(init_t; digits=4)) s, incremental PF = $(round(incr_t; digits=4)) s, simulation = $(round(sim_t; digits=4)) s, total TL = $(round(total_TL; digits=4))")
+    init_t, incr_t, sim_t, run_seed, sum_cap, _, _ = run_one_benchmark()
+    println("Profiled run (seed=$run_seed): initial PF = $(round(init_t; digits=4)) s, incremental PF = $(round(incr_t; digits=4)) s, simulation = $(round(sim_t; digits=4)) s, sum TL (capped max $(BENCHMARK_TL_CAP_PER_AGENT) per agent) = $(round(sum_cap; digits=4))")
     println("Run Profile.print() or open profiler to inspect hotspots.")
 end
 
@@ -476,33 +489,32 @@ end
 initial_pf_times   = Float64[]
 incremental_pf_times = Float64[]
 simulation_times   = Float64[]
-total_TL_values    = Float64[]
+sum_TL_capped_values = Float64[]
 seeds = UInt32[]
-avg_pathfinding_prev = 0.0
+agent_tl_runs = Int[]
+agent_tl_ids = Int[]
+agent_tl_values = Float64[]
 
-println("Benchmark: Scenario 3 with D* Lite (pathfinding + simulation). Max runs = $BENCHMARK_MAX_RUNS, convergence = $(BENCHMARK_CONVERGENCE_PCT*100)%.")
+println("Benchmark: Scenario 3 with D* Lite (pathfinding + simulation). Runs = $BENCHMARK_MAX_RUNS.")
 for run_id in 1:BENCHMARK_MAX_RUNS
-    t_init, t_incr, t_sim, run_seed, total_TL = run_one_benchmark()
+    t_init, t_incr, t_sim, run_seed, sum_TL_capped, per_agent_TL_capped, agent_ids = run_one_benchmark()
     push!(initial_pf_times,    t_init)
     push!(incremental_pf_times, t_incr)
     push!(simulation_times,     t_sim)
-    push!(total_TL_values,      total_TL)
+    push!(sum_TL_capped_values, sum_TL_capped)
     push!(seeds, run_seed)
+    for k in eachindex(per_agent_TL_capped)
+        push!(agent_tl_runs, run_id)
+        push!(agent_tl_ids, agent_ids[k])
+        push!(agent_tl_values, per_agent_TL_capped[k])
+    end
 
     n = length(initial_pf_times)
     avg_initial_pf    = sum(initial_pf_times)    / n
     avg_incremental_pf = sum(incremental_pf_times) / n
     avg_simulation    = sum(simulation_times)    / n
-    converged = n >= BENCHMARK_MIN_RUNS && avg_pathfinding_prev > 0 &&
-        (abs((avg_initial_pf + avg_incremental_pf) - avg_pathfinding_prev) / avg_pathfinding_prev <= BENCHMARK_CONVERGENCE_PCT)
 
-    println("  Run $run_id (seed=$run_seed): initial PF = $(round(t_init; digits=4)) s, incremental PF = $(round(t_incr; digits=4)) s, simulation = $(round(t_sim; digits=4)) s, total TL = $(round(total_TL; digits=4))  (avg total PF = $(round(avg_initial_pf + avg_incremental_pf; digits=4)) s)")
-    global avg_pathfinding_prev = avg_initial_pf + avg_incremental_pf
-
-    if converged
-        println("Converged at run $run_id (pathfinding avg change < $(BENCHMARK_CONVERGENCE_PCT*100)%).")
-        break
-    end
+    println("  Run $run_id (seed=$run_seed): initial PF = $(round(t_init; digits=4)) s, incremental PF = $(round(t_incr; digits=4)) s, simulation = $(round(t_sim; digits=4)) s, sum TL capped = $(round(sum_TL_capped; digits=4))  (avg total PF = $(round(avg_initial_pf + avg_incremental_pf; digits=4)) s)")
 end
 
 n_runs = length(initial_pf_times)
@@ -511,11 +523,19 @@ avg_incremental_pf_final = sum(incremental_pf_times) / n_runs
 avg_pathfinding_final   = avg_initial_pf_final + avg_incremental_pf_final
 avg_simulation_final  = sum(simulation_times)  / n_runs
 
-xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_Benchmarking_$(n_agents)_$(cost_metric_str)_$(heuristic_code).xlsx"
+run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
+xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite 5 Agents Benchmarking_$(run_timestamp).xlsx"
 run_ids = collect(1:n_runs)
-columns_data = [run_ids, seeds, initial_pf_times, incremental_pf_times, simulation_times, total_TL_values]
-column_names = ["Run", "Seed", "InitialPathfindingTime_s", "IncrementalPathfindingTime_s", "SimulationTime_s", "Total TL"]
-XLSX.writetable(xlsx_path, columns_data, column_names; sheetname = "Runs", overwrite = true)
+columns_data = [run_ids, seeds, initial_pf_times, incremental_pf_times, simulation_times, sum_TL_capped_values]
+column_names = ["Run", "Seed", "InitialPathfindingTime_s", "IncrementalPathfindingTime_s", "SimulationTime_s", "SumTL_capped"]
+agent_columns_data = [agent_tl_runs, agent_tl_ids, agent_tl_values]
+agent_column_names = ["Run", "AgentID", "TL_capped_max3"]
+# XLSX multi-sheet writetable expects identifier keywords, e.g. Runs=(data, names), not "Runs" => (...).
+XLSX.writetable(xlsx_path;
+    Runs=(columns_data, column_names),
+    AgentTL=(agent_columns_data, agent_column_names),
+    overwrite=true,
+)
 XLSX.openxlsx(xlsx_path, mode = "rw") do xf
     sh = xf["Runs"]
     sh[n_runs + 2, 1] = "Number of runs"

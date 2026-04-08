@@ -6,6 +6,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using FileIO: load                     
     using Images                    
     using DataFrames           
+    using Dates
     using Statistics
     using DelimitedFiles
     using CSV
@@ -47,6 +48,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 50                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                                # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
@@ -318,7 +320,7 @@ df = DataFrame(
     toxicload  = Float64[]
 )
 
-csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed)_NOVIDEO.csv"
+csv_file = "SCENARIOS/SCENARIO 2/Simulation Results/SCENARIO_2_$(n_agents)_$(seed)_NOVIDEO_$(run_timestamp).csv"
 
 # Run simulation loop (without video recording)
 sim_runtime = @elapsed begin
