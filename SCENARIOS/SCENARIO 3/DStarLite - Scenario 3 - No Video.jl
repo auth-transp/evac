@@ -77,7 +77,7 @@ end
 
 
     #goals
-    dests = [(600., 980.), (100., 200.)]
+    dests = [(500., 854.), (120., 248.)]
 
     #Generate the RNG for the model
     rng = MersenneTwister(seed)
@@ -112,7 +112,8 @@ function move_along_precomputed_path!(agent::AgentEscapes, speed, dt)
     dir = target .- agent.pos
     dist = norm(dir)
 
-    if dist < speed * dt
+    # dist == 0: already on waypoint; must pop without dividing (speed==0 ⇒ 0 < speed*dt is false and 0/0 → NaN)
+    if iszero(dist) || dist < speed * dt
         agent.pos = target
         popfirst!(agent.path)   # πήγες στο cell
     else

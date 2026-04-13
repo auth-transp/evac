@@ -64,7 +64,7 @@ end
 
 
     #goals
-    dests = [(600., 980.), (100., 200.)]
+    dests = [(500., 854.), (120., 248.)]
 
     ## Note that the space of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods

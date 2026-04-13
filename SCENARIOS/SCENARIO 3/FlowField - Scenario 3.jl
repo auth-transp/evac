@@ -84,7 +84,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
 end
 
 # goals (same as A* scenario)
-dests = [(600., 980.), (100., 200.)]
+dests = [(500., 854.), (120., 248.)]
 
 rng = MersenneTwister(seed)
 space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)

@@ -76,7 +76,7 @@ end
 
 
     #goals
-    dests = [(600., 980.), (100., 200.), (100., 800.), (830., 356.)]
+    dests = [(500., 854.), (120., 248.)]
 
     #Generate the RNG for the model
     rng = MersenneTwister(seed)

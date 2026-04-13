@@ -7,7 +7,6 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using ImageMagick
     using Images
     using Random
-    using StaticArrays
     using Profile
     using BenchmarkTools
 end
@@ -16,7 +15,6 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
     age::Float64
     mass::Float64
     toxicload::Float64
-    path::Vector{Tuple{Int,Int}}
     pathX::Vector{Float64}
     pathY::Vector{Float64}
     TL1::Vector{Float64}
@@ -24,7 +22,7 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
     TL3::Vector{Float64}
 end
 
-begin   # Φόρτωση heightmap και concentration maps 1..7
+begin   # Φόρτωση heightmap και concentration maps 1..7 (same as D* Lite benchmark)
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
@@ -51,7 +49,7 @@ begin   # Παράμετροι μοντέλου
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.0
     n_agents = 5
-    
+
     toxicity_rate = 0.07
     age_range = (22, 60)
     speed_range = (4.0, 7.0)
@@ -70,8 +68,7 @@ space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 begin
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
     cost_metric_str = "APM"
-    heuristic_code  = "DF"
-    pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = cost_metric_obj)
+    pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     properties = (
         pathfinderPM = pathfinderPM,
         heightmap    = heightmap,
@@ -79,21 +76,6 @@ begin
         speed_range  = speed_range,
         goal         = dests,
     )
-end
-
-function move_along_precomputed_path!(agent::AgentEscapes, speed, dt)
-    isempty(agent.path) && return
-    cell = agent.path[1]
-    target = SVector{2,Float64}(cell[1], cell[2])
-    dir = target .- agent.pos
-    dist = norm(dir)
-    # dist == 0: already on waypoint; must pop without dividing (speed==0 ⇒ 0 < speed*dt is false and 0/0 → NaN)
-    if iszero(dist) || dist < speed * dt
-        agent.pos = target
-        popfirst!(agent.path)
-    else
-        agent.pos += (dir / dist) * speed * dt
-    end
 end
 
 #
@@ -130,7 +112,7 @@ function agent_step!(person, model)
     elseif person.toxicload >= 3
         speed = 0.0
     end
-    move_along_precomputed_path!(person, speed * METERS_TO_PIXELS, model.dt)
+    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
     push!(person.pathX, person.pos[1])
     push!(person.pathY, person.pos[2])
 end
@@ -174,7 +156,7 @@ begin
         add_agent!(
             pos, AgentEscapes, model,
             vel, age, mass, 1.0,
-            Tuple{Int,Int}[], [pos[1]], [pos[2]],
+            [pos[1]], [pos[2]],
             [0.0], [0.0], [0.0]
         )
     end
@@ -276,39 +258,11 @@ function update_toxic_load(Ct, TLcurrent, dt)
     return TL
 end
 
-@inline function world_to_cell(p::Tuple{Float64,Float64}, dims::Tuple{Int,Int})
-    i = clamp(Int(floor(p[1])), 1, dims[1])
-    j = clamp(Int(floor(p[2])), 1, dims[2])
-    return (i, j)
-end
-
-@inline function world_to_cell(p::SVector{2,Float64}, dims::Tuple{Int,Int})
-    i = clamp(Int(floor(p[1])), 1, dims[1])
-    j = clamp(Int(floor(p[2])), 1, dims[2])
-    return (i, j)
-end
-
-function find_changed_cells(old::AbstractMatrix{Int}, new::AbstractMatrix{Int})
-    cells = Tuple{Int,Int}[]
-    @inbounds for i in axes(old,1), j in axes(old,2)
-        old[i,j] != new[i,j] && push!(cells, (i,j))
-    end
-    return cells
-end
-
-function choose_best_path(paths::Vector{Vector{Tuple{Int,Int}}})
-    filter!(!isempty, paths)
-    isempty(paths) && return Tuple{Int,Int}[]
-    return paths[argmin(length.(paths))]
-end
-
-# --- Benchmark parameters (like Scenario 2 Benchmarking) ---
+# --- Benchmark parameters (match DStarLite Scenario 3 Benchmarking) ---
 const BENCHMARK_MAX_RUNS = 100
 const BENCHMARK_T_STEPS = 2500
 const BENCHMARK_TL_CAP_PER_AGENT = 3.0
 
-# Spread CM transitions evenly over the first 8/10 of the benchmark horizon (same idea as Scenario 3).
-# t = (step_idx - 1) * dt
 const CM_ACTIVE_FRACTION_BENCH = 0.7
 const CM_SWITCH_TIMES = collect(range(
     0.0,
@@ -319,29 +273,17 @@ const CM_SWITCH_TIMES = collect(range(
 """
     run_one_benchmark() -> (initial_pf, incremental_pf, sim_time, seed, sum_TL_capped, per_agent_TL_capped, agent_ids)
 
-Build a fresh model with random seed, add agents, time the initial D* Lite
-planning (planner init + first path extraction), then run BENCHMARK_T_STEPS
-with dynamic concentration maps (1→NUM_CMS) while timing all incremental replanning
-work separately from pure simulation stepping. Returns:
-
-- initial_pf_time_s: time spent on initial pathfinding (s)
-- incremental_pf_time_s: time spent on all incremental replans (s)
-- simulation_time_s: time spent stepping the model (s)
-- seed: RNG seed for this run
-- sum_TL_capped: sum of `min(toxicload, BENCHMARK_TL_CAP_PER_AGENT)` per agent
-- per_agent_TL_capped: same cap per agent (sorted by agent `id`)
-- agent_ids: agent ids matching `per_agent_TL_capped`
-
-No CSV/video is written from this function; higher-level code handles aggregation/Excel.
+Same contract as `DStarLite - Scenario 3 - Benchmarking.jl`, but initial pathfinding is
+`plan_best_route!` for every agent after syncing CM1 into the A* penalty map, and incremental
+work updates `Pathfinding.penaltymap` in place and replans with `plan_best_route!`.
 """
 function run_one_benchmark()
     seed = rand(Random.RandomDevice(), UInt32)
     rng_run = MersenneTwister(seed)
 
     local_NPM_int = copy(NPM_int)
-    local_prev_NPM_int = copy(local_NPM_int)
     local_cost_metric_obj = AbsolutePenaltyMap(local_NPM_int, MaxDistance{2}())
-    local_pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = local_cost_metric_obj)
+    local_pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = local_cost_metric_obj)
     local_properties = (
         pathfinderPM = local_pathfinderPM,
         heightmap    = heightmap,
@@ -382,39 +324,24 @@ function run_one_benchmark()
         add_agent!(
             pos, AgentEscapes, model_run,
             vel, age, mass, 1.0,
-            Tuple{Int,Int}[], [pos[1]], [pos[2]],
+            [pos[1]], [pos[2]],
             [0.0], [0.0], [0.0]
         )
     end
 
-    grid_dims  = size(NPM_int)
-    exit_cells = [world_to_cell(g, grid_dims) for g in dests]
+    current_map_idx = 1
+    penalty_map .= cm_list[current_map_idx]
+    @. local_NPM_int = Int(round(heightmap + penalty_map))
+    Pathfinding.penaltymap(local_pathfinderPM) .= local_NPM_int
 
-    planner_init_time = @elapsed begin
-        local_planners = [
-            init_planner(local_pathfinderPM, goal_cell)
-            for goal_cell in exit_cells
-        ]
-    end
-
-    path_extract_time = @elapsed begin
+    initial_pf_time = @elapsed begin
         for a in allagents(model_run)
-            start = world_to_cell(a.pos, grid_dims)
-            paths = [extract_path(p, start) for p in local_planners]
-            a.path = choose_best_path(paths)
+            plan_best_route!(a, dests, local_pathfinderPM)
         end
     end
 
     replan_time = 0.0
     sim_step_time = 0.0
-    NUM_MAPS = length(CM_SWITCH_TIMES)
-
-    # Ensure global penalty_map and local_NPM_int start from CM1 for this run
-    current_map_idx = 1
-    penalty_map .= cm_list[current_map_idx]
-    @. local_NPM_int = Int(round(heightmap + penalty_map))
-    local_prev_NPM_int .= local_NPM_int
-    local_pathfinderPM.cost_metric.pmap .= local_NPM_int
 
     for step_idx in 1:BENCHMARK_T_STEPS
         sim_step_time += @elapsed step!(model_run, 1)
@@ -423,31 +350,18 @@ function run_one_benchmark()
         if new_idx != current_map_idx
             current_map_idx = new_idx
             replan_time += @elapsed begin
-                # Update concentration map and the underlying integer cost map
                 penalty_map .= cm_list[current_map_idx]
                 @. local_NPM_int = Int(round(heightmap + penalty_map))
-
-                # Incremental D* Lite update: identify changed cells and update planners in-place
-                changed_cells = find_changed_cells(local_prev_NPM_int, local_NPM_int)
-                local_prev_NPM_int .= local_NPM_int
-                local_pathfinderPM.cost_metric.pmap .= local_NPM_int
-                for planner in local_planners
-                    update_after_cm_change!(planner, changed_cells)
-                end
-
-                # Re-extract paths for all agents using the updated planners
+                Pathfinding.penaltymap(local_pathfinderPM) .= local_NPM_int
                 for a in allagents(model_run)
-                    start = world_to_cell(a.pos, size(local_NPM_int))
-                    paths = [extract_path(p, start) for p in local_planners]
-                    a.path = choose_best_path(paths)
+                    plan_best_route!(a, model_run.goal, local_pathfinderPM)
                 end
             end
         end
     end
 
-    initial_pf_time = planner_init_time + path_extract_time
     incremental_pf_time = replan_time
-    simulation_time  = sim_step_time
+    simulation_time = sim_step_time
 
     agents_sorted = sort(collect(allagents(model_run)), by = a -> a.id)
     sum_TL_capped = 0.0
@@ -487,7 +401,7 @@ function benchmark_run_one_benchmark(; samples::Int = 10)
     return result
 end
 
-# --- Benchmark loop (like Scenario 2 Benchmarking) ---
+# --- Benchmark loop ---
 initial_pf_times   = Float64[]
 incremental_pf_times = Float64[]
 simulation_times   = Float64[]
@@ -497,7 +411,7 @@ agent_tl_runs = Int[]
 agent_tl_ids = Int[]
 agent_tl_values = Float64[]
 
-println("Benchmark: Scenario 3 with D* Lite (pathfinding + simulation). Runs = $BENCHMARK_MAX_RUNS.")
+println("Benchmark: Scenario 3 with A* (pathfinding + simulation). Runs = $BENCHMARK_MAX_RUNS.")
 for run_id in 1:BENCHMARK_MAX_RUNS
     t_init, t_incr, t_sim, run_seed, sum_TL_capped, per_agent_TL_capped, agent_ids = run_one_benchmark()
     push!(initial_pf_times,    t_init)
@@ -526,13 +440,12 @@ avg_pathfinding_final   = avg_initial_pf_final + avg_incremental_pf_final
 avg_simulation_final  = sum(simulation_times)  / n_runs
 
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
-xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite $(n_agents) Agents Benchmarking_$(run_timestamp).xlsx"
+xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/AStar $(n_agents) Agents Benchmarking_$(run_timestamp).xlsx"
 run_ids = collect(1:n_runs)
 columns_data = [run_ids, seeds, initial_pf_times, incremental_pf_times, simulation_times, sum_TL_capped_values]
 column_names = ["Run", "Seed", "InitialPathfindingTime_s", "IncrementalPathfindingTime_s", "SimulationTime_s", "SumTL_capped"]
 agent_columns_data = [agent_tl_runs, agent_tl_ids, agent_tl_values]
 agent_column_names = ["Run", "AgentID", "TL_capped_max3"]
-# XLSX multi-sheet writetable expects identifier keywords, e.g. Runs=(data, names), not "Runs" => (...).
 XLSX.writetable(xlsx_path;
     Runs=(columns_data, column_names),
     AgentTL=(agent_columns_data, agent_column_names),
