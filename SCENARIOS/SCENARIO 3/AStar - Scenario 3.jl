@@ -28,15 +28,15 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
 end
 
 
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM8)
+begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM7)
     # heightmap (unchanged)
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
     heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
 
-    # --- Load all concentration maps 1..8 as Float64 arrays ---
-    const NUM_CMS = 8
+    # --- Load all concentration maps 1..7 as Float64 arrays ---
+    const NUM_CMS = 7
     cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)
     for k in 1:NUM_CMS
         fn = joinpath("Concentration Maps", string(k) * ".bmp")
@@ -48,15 +48,6 @@ begin   # Φόρτωση του heightmap και των hand-drawn penalty maps 
     # basic check: dimensions match heightmap
     for k in 1:NUM_CMS
         @assert size(cm_list[k]) == size(heightmap) "Concentration map $k size mismatch with heightmap"
-    end
-
-    global CM_GLOBAL_MIN, CM_GLOBAL_MAX, CM_LEVELS
-    CM_GLOBAL_MIN = minimum(minimum.(cm_list))
-    CM_GLOBAL_MAX = maximum(maximum.(cm_list))
-    if CM_GLOBAL_MIN < CM_GLOBAL_MAX
-        CM_LEVELS = collect(range(CM_GLOBAL_MIN, CM_GLOBAL_MAX, length = 10))
-    else
-        CM_LEVELS = Float64[CM_GLOBAL_MIN]
     end
 
     # start with first CM
@@ -71,7 +62,6 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 50                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
@@ -98,12 +88,13 @@ end
 
     ## Note that the dimensions of the space do not have to correspond to the dimensions
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
-    space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
+    space = Pathfinding.ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 
 
 begin
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "AbsolutePenaltyMap_MaxDistance2"
+    cost_metric_str = "APM"
+    heuristic_code  = "DF"   # parity with DStarLite export names (A* uses default heuristic)
     pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     properties = (
         pathfinderPM = pathfinderPM,
@@ -131,9 +122,11 @@ function agent_step!(person, model)
         return
     end
 
-    position = floor.(Int, person.pos)
-   # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
-    Ct = penalty_map[position[1], position[2]]
+    grid_dims = size(penalty_map)
+    i = clamp(Int(floor(person.pos[1])), 1, grid_dims[1])
+    j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])
+    # Ct παίρνεται τώρα από το global penalty_map (hand-drawn maps)
+    Ct = penalty_map[i, j]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
@@ -174,11 +167,7 @@ model = ABM(
   model_step!  = model_step!
 )
 
-# ===== PATHFINDING TIMING STARTS HERE =====
-# Separate timing for pathfinding operations (outside simulation loop)
-initial_pathfinding_time = 0.0
-
-# Add agents (agent creation is NOT timed - only pathfinding operations are timed)
+# Add agents (initial route planning is timed inside the @time block with the animation, like DStarLite)
 for _ in 1:n_agents
     age = rand(abmrng(model))*(age_range[2]-age_range[1]) + age_range[1]
     mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]
@@ -205,14 +194,8 @@ for _ in 1:n_agents
         continue
     end
     
-    person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-    
-    # Time only the pathfinding operation (initial planning)
-    global initial_pathfinding_time
-    initial_pathfinding_time += @elapsed plan_best_route!(person, dests, model.pathfinderPM)
+    add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
 end
-
-println("Initial pathfinding time (outside simulation loop): $(round(initial_pathfinding_time; digits=4)) s")
 
 
 function setupToxic()                                               # Define the setupToxic function
@@ -298,7 +281,9 @@ function setupToxic()                                               # Define the
 end
 
 Balpha, Btime, Brho = setupToxic()
-
+# Suffix for exports: align naming with DStarLite - Scenario 3.jl
+run_export_tag = "newAEGL_0.5CM_uncappedTL"
+run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
 
 
 function update_toxic_load(Ct, TLcurrent, dt)
@@ -367,14 +352,17 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
     end
 end
 
-agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
-
-
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 1852
-    # Simulation time t matches the on-screen counter: t = (frame - 1) * dt. Switch CMs at these t (s).
-    const CM_SWITCH_TIMES = Float64[0, 9, 48, 85, 100, 120, 215, 300]
-    const NUM_MAPS = length(CM_SWITCH_TIMES)
+    # Spread CM transitions evenly over the first 8/10 of the simulation time (same as DStarLite).
+    # Time counter is t = (frame - 1) * dt.
+    const CM_ACTIVE_FRACTION = 0.8
+    const NUM_MAPS = NUM_CMS
+    const CM_SWITCH_TIMES = collect(range(
+        0.0,
+        stop = CM_ACTIVE_FRACTION * ((T - 1) * dt),
+        length = NUM_MAPS,
+    ))
 # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
     ax  = Makie.Axis(fig[1,1];
@@ -399,7 +387,7 @@ agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
     cm_contour = contour!(
         ax, cm_obs;
         colormap = cgrad([:yellow, :orange, :red]),
-        levels = CM_LEVELS,
+        levels = 10,
         colorrange = cm_colorrange,
         linewidth = 1.5,
         alpha = 0.7,
@@ -435,27 +423,27 @@ agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
         push!(ys0, a.pos[2])
     end
 
-    colors0 = [agent_marker_color(a) for a in allagents(model)]
+    colors0 = Symbol[]
+    for a in allagents(model)
+        push!(colors0, personcolor(a))
+    end
 
     posobs = Observable(Point2f.(xs0, ys0))
     colobs = Observable(colors0)
 
-    agents_vec = collect(allagents(model))
-    line_color_obs = [Observable(agent_marker_color(a)) for a in agents_vec]
     lines_plots = [
         lines!(
             ax,
             [a.pos[1]], [a.pos[2]];
-            color     = line_color_obs[i],
+            color     = personcolor(a),
             linewidth = 2,
         )
-        for (i, a) in enumerate(agents_vec)
+        for a in allagents(model)
     ]
     agent_scat = scatter!(
         ax, posobs;
         color       = colobs,
         markersize  = 10,
-        strokewidth = 0,
     )
 
     agent_id_labels = [string(a.id) for a in allagents(model)]
@@ -480,68 +468,70 @@ agent_marker_color(a::AgentEscapes) = Makie.to_color(personcolor(a))
     )
 
 
-video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).mp4"
-csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).csv"  # added
+video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
+csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"
 
 # keep a variable for the currently active map index
 current_map_idx = 1
 
-# Track pathfinding time during simulation (inside record loop)
-replanning_time = 0.0
+path_planning_init_time = Ref(0.0)
+path_planning_replan_time = Ref(0.0)
+simulation_time = Ref(0.0)
+
+# Initial pathfinding: same placement as DStarLite (inside @time block, before record)
+path_planning_init_time[] += @elapsed begin
+    for a in allagents(model)
+        plan_best_route!(a, dests, model.pathfinderPM)
+    end
+end
 
 record(fig, video_file, 1:T; framerate=30) do frame
     # update frame counter observable
     frame_obs[] = frame
 
-    # 1) Swap CM before step! so simulation and video match the same map index
-    global current_map_idx, replanning_time  # Declare as global
+    # 1) step the model first (same order as DStarLite - Scenario 3.jl)
+    simulation_time[] += @elapsed step!(model, 1)
+
+    # 2) concentration map index for this frame
+    global current_map_idx
     t_sim = (frame - 1) * dt
     new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)
     if new_idx != current_map_idx
         current_map_idx = new_idx
 
-        # --- PATHFINDING TIMING: Replanning triggered by concentration map change (INSIDE simulation loop) ---
-        # Only time pathfinding operations: updating penalty map, updating pathfinder, and replanning paths
-        replanning_time += @elapsed begin
-            # 1) swap global concentration map used by agent_step! (preprocessing for pathfinding)
-            penalty_map .= cm_list[current_map_idx]   # in-place replace values
+        path_planning_replan_time[] += @elapsed begin
+            penalty_map .= cm_list[current_map_idx]
 
-            # 2) recompute combined penalty map for pathfinding (preprocessing)
             NPM = heightmap .+ penalty_map
             NPM_int = round.(Int, NPM)
 
-            # 3) mutate the existing A* pathfinder's internal penalty map in-place (pathfinding state update)
+            global cost_metric_obj
+            cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
+
             pm = Pathfinding.penaltymap(model.pathfinderPM)
             pm .= NPM_int
 
-            # 4) replan for all agents using the updated pathfinder (pathfinding operation)
             for a in allagents(model)
                 plan_best_route!(a, model.goal, model.pathfinderPM)
             end
         end
 
-        # optional: print/log
-        println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths (updated penalty map in-place).")
+        println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
     end
-
-    # 2) step the model
-    step!(model, 1)
 
     # Update concentration map visualization
     cm_obs[] = penalty_map
 
-    # 3) update trails/visuals (paths + TL-dependent colors for video)
-    agents_now = collect(allagents(model))
-    for (i, a) in enumerate(agents_now)
+    # 3) update trails/visuals
+    for (i, a) in enumerate(allagents(model))
         lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
-        line_color_obs[i][] = agent_marker_color(a)
     end
 
-    posobs[] = [Point2f(a.pos[1], a.pos[2]) for a in agents_now]
-    colobs[] = [agent_marker_color(a) for a in agents_now]
+    posobs[] = [Point2f(a.pos[1], a.pos[2]) for a in allagents(model)]
+    colobs[] = [personcolor(a) for a in allagents(model)]
 
     # 4) collect data
-    for a in agents_now
+    for a in allagents(model)
         push!(df, (
             frame,
             a.id,
@@ -554,18 +544,16 @@ record(fig, video_file, 1:T; framerate=30) do frame
     # 5) record runs for T frames (fixed horizon)
     end
 
-    # ===== PATHFINDING TIMING ENDS HERE =====
-    # Total pathfinding time = initial planning (outside loop) + all replanning (inside loop)
-    total_pathfinding_time = initial_pathfinding_time + replanning_time
-    println("\n=== Pathfinding Timing Summary ===")
-    println("Initial pathfinding time (outside simulation loop): $(round(initial_pathfinding_time; digits=4)) s")
-    println("Replanning time (inside simulation loop): $(round(replanning_time; digits=4)) s")
-    println("Total pathfinding time: $(round(total_pathfinding_time; digits=4)) s")
-    println("===================================\n")
-
     println("Το animation σώθηκε ως $video_file")
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
+
+    total_path_planning = path_planning_init_time[] + path_planning_replan_time[]
+    println("TIMING BREAKDOWN:")
+    println("  Pathfinding time (total): ", round(total_path_planning; digits=6), " s")
+    println("    - Initial pathfinding: ", round(path_planning_init_time[]; digits=6), " s")
+    println("    - Replanning during CM changes: ", round(path_planning_replan_time[]; digits=6), " s")
+    println("  Simulation time (step! only): ", round(simulation_time[]; digits=6), " s")
 end
 
 
@@ -576,10 +564,10 @@ begin
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
-        # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *_tl_agents_*.csv
-        pattern = Regex("^AStar_SCENARIO_3_.*_$(cost_metric_str)_.*\\.csv\$")
+        # αν δεν δοθεί seed, πάρε το πιο πρόσφατο AStar_SCENARIO_3_*.csv
+        pattern = Regex("^AStar_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *AStar_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -651,12 +639,15 @@ begin
     fig[1,1, TopLeft()] = lbl
 
     # --- Τρία layers μπαρών: εσωτερικά + 0 + 3 ---
-   y_inner = Observable(zeros(Float64, length(centers_inner)))  # (0,3) ανά 0.5
+    y_inner = Observable(zeros(Float64, length(centers_inner)))  # (0,3) ανά 0.5
     y0      = Observable([0.0])                                  # bin για 0
     y3      = Observable([0.0])                                  # bin για 3
 
-    # Bar colors aligned with map agents (personcolor): TL≤1 → green, 1<TL<3 → orange
-    inner_cols = [Makie.to_color(x < 1.0 ? :green : :orange) for x in centers_inner]
+    # Χρώματα για τα εσωτερικά bins ανά TL ζώνη (ίδια λογική με DStarLite - Scenario 3.jl)
+    inner_cols = [ c for x in centers_inner for c in
+        (x < 1.0  ? (:dodgerblue,) :          # (0,1)
+        x < 2.0  ? (:gold,)       :          # [1,2)
+                 (:orange,)) ]            # [2,3)
 
     # εσωτερικές μπάρες (vector χρωμάτων)
     barplot!(ax, centers_inner, y_inner; width = bin_w_inner, color = inner_cols, strokewidth = 0)
@@ -666,13 +657,13 @@ begin
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "AStar_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(run_timestamp).mp4")
+    out_file = joinpath(folder, "AStar_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4")
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])
 
-        count0       = count(v -> v <= 1e-9 || isapprox(v, 0.0; atol = 1e-6), tl)
-        count3       = count(v -> v >= 3.0 - 1e-9 || isapprox(v, 3.0; atol = 1e-4), tl)
+        count0       = count(==(0.0), tl)                 # ακριβώς 0 (όπως DStarLite)
+        count3       = count(==(3.0), tl)                 # ακριβώς 3
         counts_inner = bin_counts_open(tl, edges_inner)   # μόνο (0,3) ανά 0.5
 
         y_inner[] = Float64.(counts_inner)
