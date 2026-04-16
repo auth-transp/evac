@@ -48,7 +48,7 @@ NPM_int = round.(Int, NPM)
 begin   # Παράμετροι μοντέλου
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.0
-    n_agents = 100
+    n_agents = 5
 
     toxicity_rate = 0.07
     age_range = (22, 60)
