@@ -1,6 +1,7 @@
 begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents
     using Agents.Pathfinding
+    using LinearAlgebra
     using Random                        
     using ColorTypes                      
     using ImageMagick                 
@@ -31,24 +32,24 @@ end
 end
 
     
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps
-
-    # heightmap
+begin   # Heightmap για χώρο / A* · CM1..CM7 μόνο για TL και οπτικό overlay (και NPM στο pathfinding)
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)
-    heightmap = 255 .- heightmap   # αυτό κάνει την αντιστροφή
+    heightmap = 255 .- heightmap
 
-    # Φόρτωση penalty maps
-    penalty_map = load("Concentration Maps/6.bmp")
-    penalty_map = permutedims(channelview(penalty_map), [2,3,1])[:,:,1]
-    global penalty_map = floor.(Int, convert.(Float64, penalty_map) * 500)
-    
-    # Check dimension consistency
-    @assert size(penalty_map) == size(heightmap) "penalty_map dimensions $(size(penalty_map)) do not match heightmap dimensions $(size(heightmap))"
+    const NUM_CMS = 7
+    global cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)
+    for k in 1:NUM_CMS
+        fn = joinpath("Concentration Maps", string(k) * ".bmp")
+        img = load(fn)
+        img = permutedims(channelview(img), [2, 3, 1])[:, :, 1]
+        cm_list[k] = convert.(Float64, img) .* 255.0
+        @assert size(cm_list[k]) == size(heightmap) "Concentration map $k size mismatch with heightmap"
+    end
+    global tl_penalty_map = copy(cm_list[1])
+    global NPM = heightmap .+ tl_penalty_map
 end
-
-NPM = heightmap + penalty_map # Merging the two maps to create a new penalty map
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     # Time–speed correlation: distance per step = speed × dt (in space units).
@@ -64,7 +65,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
     ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
     ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
-    dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    dims = size(heightmap)                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
     
     # Set walkmap to false in white areas of the heightmap (after reversal, white = high values)
@@ -85,7 +86,7 @@ end
     ## of the pathfinder. Discretisation is handled by the pathfinding methods
     # ContinuousSpace requires extent to be exactly divisible by spacing in each dimension.
     # Use a nearby compatible spacing (0.25 px) instead of METERS_TO_PIXELS (~0.2893 px).
-    space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
+    space = ContinuousSpace(size(heightmap); periodic = false, spacing = 1)
 
 
 begin
@@ -115,9 +116,10 @@ function agent_step!(person, model)
         return
     end
 
-    position = floor.(Int, person.pos)
-   # Ct παίρνεται τώρα από το global_penalty_map (hand-drawn maps)
-    Ct = penalty_map[position[1], position[2]]
+    grid_dims = size(tl_penalty_map)
+    i = clamp(Int(floor(person.pos[1])), 1, grid_dims[1])
+    j = clamp(Int(floor(person.pos[2])), 1, grid_dims[2])
+    Ct = tl_penalty_map[i, j]
     TLcurrent = [person.TL1[end], person.TL2[end], person.TL3[end]]
     TL = update_toxic_load(Ct, TLcurrent, model.dt)
 
@@ -291,7 +293,7 @@ function update_toxic_load(Ct, TLcurrent, dt)
         Cmin = Brho[k, 7]
         Cmax = Brho[k, 1]
         if Ct > Cmax
-            TL_rate = 1 / Btime[1];
+            TL_rate = 1 / Btime[1, k];
         elseif Ct < Cmin
             TL_rate = 0.0;
         else
@@ -348,6 +350,11 @@ end
 
 begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     T = 3375
+    const CM_ACTIVE_FRACTION = 0.7
+    cm_switch_times = collect(range(0.0, stop = CM_ACTIVE_FRACTION * ((T - 1) * dt), length = NUM_CMS))
+    tl_map_idx = Ref(1)
+    tl_penalty_map .= cm_list[tl_map_idx[]]
+    NPM .= heightmap .+ tl_penalty_map
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
@@ -358,7 +365,25 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     heatmap!(ax, heightmap; colormap=:grays, alpha=0.3)
     
     # --- Concentration Map visualization (contour only, overlay on heightmap) ---
-    contour!(ax, penalty_map; colormap=:hot, levels=10, linewidth=1.5, alpha=0.7)
+    cm_obs = Observable(copy(tl_penalty_map))
+    cm_colorrange = @lift let z = $cm_obs
+        m = minimum(z)
+        M = maximum(z)
+        if m == M
+            δ = max(1.0, abs(m) * 1e-6)
+            (Float32(m - δ), Float32(M + δ))
+        else
+            (Float32(m), Float32(M))
+        end
+    end
+    contour!(
+        ax, cm_obs;
+        colormap = cgrad([:yellow, :orange, :red]),
+        colorrange = cm_colorrange,
+        levels = 10,
+        linewidth = 1.5,
+        alpha = 0.7,
+    )
     
     goals = model.goal
     scatter!(ax,
@@ -420,6 +445,14 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
+        t_sim = (frame - 1) * dt
+        new_idx = searchsortedlast(cm_switch_times, t_sim)
+        if new_idx != tl_map_idx[]
+            tl_map_idx[] = new_idx
+            tl_penalty_map .= cm_list[new_idx]
+            NPM .= heightmap .+ tl_penalty_map
+        end
+        cm_obs[] = tl_penalty_map
         # 2) βήμα προσομοίωσης
         step!(model, 1)
 
