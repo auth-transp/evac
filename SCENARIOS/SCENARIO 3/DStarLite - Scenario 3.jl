@@ -66,7 +66,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 50                                                        # Define the n_agents variable as 3
+    n_agents = 100                                                        # Define the n_agents variable as 3
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -419,15 +419,8 @@ end
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 1852
-    # Spread CM transitions evenly over the first 8/10 of the simulation time.
     # Time counter is t = (frame - 1) * dt.
-    const CM_ACTIVE_FRACTION = 0.8
-    const NUM_MAPS = NUM_CMS
-    const CM_SWITCH_TIMES = collect(range(
-        0.0,
-        stop = CM_ACTIVE_FRACTION * ((T - 1) * dt),
-        length = NUM_MAPS,
-    ))
+    const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
 
 
     # -- Στήσιμο Figure & Axis --
