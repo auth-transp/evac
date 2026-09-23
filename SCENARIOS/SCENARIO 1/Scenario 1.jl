@@ -16,6 +16,8 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Observables
     using Makie
     using CSV
+
+    include(joinpath(@__DIR__, "..", "append_run_history.jl"))
 end
 
 
@@ -155,6 +157,7 @@ model = StandardABM(
 
 
 begin
+    path_planning_time = Ref(0.0)
     for _ in 1:n_agents
         age = rand(abmrng(model)) * (age_range[2] - age_range[1]) + age_range[1]
         mass = rand(abmrng(model)) * (mass_range[2] - mass_range[1]) + mass_range[1]
@@ -179,8 +182,10 @@ begin
         end
 
         person = add_agent!(pos, AgentEscapes, model, vel, age, mass, 1., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
-        plan_best_route!(person, dests, model.pathfinderPM)
+        path_planning_time[] += @elapsed plan_best_route!(person, dests, model.pathfinderPM)
     end
+    println("TIMING BREAKDOWN:")
+    println("  Pathfinding time (total): ", round(path_planning_time[]; digits=6), " s")
 end
 
 
@@ -443,4 +448,13 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     csv_file = "SCENARIOS/SCENARIO 1/Simulation Results/SCENARIO_1_$(n_agents)_$(seed)_$(run_timestamp).csv"
     CSV.write(csv_file, df)
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
+
+    append_run_history(
+        scenario = "SCENARIO 1",
+        runner_script = "SCENARIOS/SCENARIO 1/Scenario 1.jl",
+        csv_file = csv_file,
+        mp4_file = video_file,
+        pathfinding_time = path_planning_time[],
+        run_timestamp = run_timestamp,
+    )
 end

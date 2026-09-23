@@ -33,8 +33,8 @@ struct MaxDistance{D} <: CostMetric{D} end
 
 Base.show(io::IO, metric::MaxDistance) = print(io, "MaxDistance")
 
-struct PenaltyMap{D} <: CostMetric{D}
-    base_metric::CostMetric{D}
+struct PenaltyMap{D,B<:CostMetric{D}} <: CostMetric{D}
+    base_metric::B
     pmap::Array{Int,D}
 end
 
@@ -53,16 +53,16 @@ changed by specifying `base_metric`.
 
 An example usage can be found in [Mountain Runners](https://juliadynamics.github.io/AgentsExampleZoo.jl/dev/examples/runners/).
 """
-PenaltyMap(pmap::Array{Int,D}) where {D} = PenaltyMap{D}(DirectDistance{D}(), pmap)
+PenaltyMap(pmap::Array{Int,D}) where {D} = PenaltyMap(pmap, DirectDistance{D}())
 
-PenaltyMap(pmap::Array{Int,D}, base_metric::CostMetric{D}) where {D} =
-    PenaltyMap{D}(base_metric, pmap)
+PenaltyMap(pmap::Array{Int,D}, base_metric::B) where {D,B<:CostMetric{D}} =
+    PenaltyMap{D,B}(base_metric, pmap)
 
 Base.show(io::IO, metric::PenaltyMap) =
     print(io, "HeightMap with base: $(metric.base_metric)")
 
-struct AbsolutePenaltyMap{D} <: CostMetric{D}
-    base_metric::CostMetric{D}
+struct AbsolutePenaltyMap{D,B<:CostMetric{D}} <: CostMetric{D}
+    base_metric::B
     pmap::Array{Int,D}
 end
 
@@ -83,10 +83,10 @@ determines the granularity of the underlying grid, and should agree with the siz
 Distance is calculated using [`Pathfinding.DirectDistance`](@ref) by default, and can be
 changed by specifying `base_metric`.
 """
-AbsolutePenaltyMap(pmap::Array{Int,D}) where {D} = AbsolutePenaltyMap{D}(DirectDistance{D}(), pmap)
+AbsolutePenaltyMap(pmap::Array{Int,D}) where {D} = AbsolutePenaltyMap(pmap, DirectDistance{D}())
 
-AbsolutePenaltyMap(pmap::Array{Int,D}, base_metric::CostMetric{D}) where {D} =
-    AbsolutePenaltyMap{D}(base_metric, pmap)
+AbsolutePenaltyMap(pmap::Array{Int,D}, base_metric::B) where {D,B<:CostMetric{D}} =
+    AbsolutePenaltyMap{D,B}(base_metric, pmap)
 
 Base.show(io::IO, metric::AbsolutePenaltyMap) =
     print(io, "AbsolutePenaltyMap with base: $(metric.base_metric)")

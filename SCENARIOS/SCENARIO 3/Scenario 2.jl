@@ -17,7 +17,9 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     #include("../../Agents/src/Agents.jl")
     #using .Agents
     #import .Agents: ABM, Pathfinding, Pathfinding.PenaltyMap, Pathfinding.AStar, Pathfinding.MaxDistance, @agent, move_along_route!, plan_best_route!, interacting_pairs, elastic_collision!
-end                          
+
+    include(joinpath(@__DIR__, "..", "append_run_history.jl"))
+end
 
 
 @agent struct AgentEscapes(ContinuousAgent{2, Float64}) # Αρχικοποίηση των Agents
@@ -173,6 +175,7 @@ model = ABM(
   model_step!  = model_step!
 )
 
+path_planning_time = Ref(0.0)
 @time begin
     # Single agent at the specified pixel (x, y)
     pos = Tuple(Float64.(agent_spawn_pixel))
@@ -197,8 +200,10 @@ model = ABM(
         [pos[2]],                     # pathY
         [0.0], [0.0], [0.0]
     )
-    plan_best_route!(person, dests, model.pathfinderPM)
+    path_planning_time[] += @elapsed plan_best_route!(person, dests, model.pathfinderPM)
 end
+println("TIMING BREAKDOWN:")
+println("  Pathfinding time (total): ", round(path_planning_time[]; digits=6), " s")
 
 
 function setupToxic()                                               # Define the setupToxic function
@@ -619,4 +624,14 @@ begin
     end
 
     println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")
+
+    append_run_history(
+        scenario = "SCENARIO 2",
+        runner_script = "SCENARIOS/SCENARIO 3/Scenario 2.jl",
+        csv_file = csv_file,
+        mp4_file = video_file,
+        hist_mp4_file = out_file,
+        pathfinding_time = path_planning_time[],
+        run_timestamp = run_timestamp,
+    )
 end

@@ -40,6 +40,7 @@ include("flowfield.jl")
 include("flowfield_grid.jl")
 include("flowfield_continuous.jl")
 include("dstar_lite.jl")
+include("dstar_lite_planner.jl")
 include("dstar_lite_grid.jl")
 include("dstar_lite_continuous.jl")
 
@@ -63,7 +64,8 @@ export CostMetric,
     DStarLitePlanner,
     init_planner,
     update_after_cm_change!,
-    extract_path
+    extract_path,
+    update_start!
 
 # Deprecations
 @deprecate set_target! plan_route!

@@ -17,7 +17,9 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     #include("../../Agents/src/Agents.jl")
     #using .Agents               # core Agents.jl API
     #using .Agents.Pathfinding   # DStarLite, AbsolutePenaltyMap, MaxDistance, init_planner, update_after_cm_change!, extract_path, ...
-end       
+
+    include(joinpath(@__DIR__, "..", "append_run_history.jl"))
+end
 
 
 Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
@@ -771,4 +773,14 @@ begin
     end
 
     println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")
+
+    append_run_history(
+        scenario = "SCENARIO 3",
+        runner_script = "SCENARIOS/SCENARIO 3/DStarLite - Scenario 3.jl",
+        csv_file = csv_file,
+        mp4_file = video_file,
+        hist_mp4_file = out_file,
+        pathfinding_time = total_path_planning,
+        run_timestamp = run_timestamp,
+    )
 end
