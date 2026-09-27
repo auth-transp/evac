@@ -8,6 +8,143 @@
 #   start motion.
 
 const DStarStart = Union{Nothing,Tuple{Int,Int}}
+const DStarKey = Tuple{Float64,Float64}
+
+@inline function _key_lt(a::DStarKey, b::DStarKey)
+    return (a[1] < b[1]) || (a[1] == b[1] && a[2] < b[2])
+end
+
+# ---------------- Indexed binary min-heap over grid cells ----------------
+# Replaces DataStructures.PriorityQueue: `pos[i,j]` is the cell's slot in the
+# heap (0 = absent), so membership / decrease-key need no hashing, and a key
+# change is an in-place sift instead of delete + reinsert.
+
+struct CellHeap
+    cells::Vector{Tuple{Int,Int}}
+    keys::Vector{DStarKey}
+    pos::Matrix{Int32}
+end
+
+CellHeap(sz::Tuple{Int,Int}) = CellHeap(Tuple{Int,Int}[], DStarKey[], zeros(Int32, sz))
+
+Base.isempty(h::CellHeap) = isempty(h.cells)
+Base.length(h::CellHeap) = length(h.cells)
+Base.haskey(h::CellHeap, u::Tuple{Int,Int}) = @inbounds h.pos[u[1], u[2]] != 0
+
+"Smallest (cell, key) in the heap; the heap must not be empty."
+@inline heap_top(h::CellHeap) = @inbounds (h.cells[1], h.keys[1])
+
+@inline function _heap_swap!(h::CellHeap, i::Int, j::Int)
+    @inbounds begin
+        ci, cj = h.cells[i], h.cells[j]
+        h.cells[i], h.cells[j] = cj, ci
+        h.keys[i], h.keys[j] = h.keys[j], h.keys[i]
+        h.pos[cj[1], cj[2]] = i
+        h.pos[ci[1], ci[2]] = j
+    end
+    return nothing
+end
+
+@inline function _sift_up!(h::CellHeap, i::Int)
+    @inbounds while i > 1
+        p = i >> 1
+        _key_lt(h.keys[i], h.keys[p]) || break
+        _heap_swap!(h, i, p)
+        i = p
+    end
+    return i
+end
+
+@inline function _sift_down!(h::CellHeap, i::Int)
+    n = length(h.cells)
+    @inbounds while true
+        l = 2i
+        l > n && break
+        c = (l < n && _key_lt(h.keys[l+1], h.keys[l])) ? l + 1 : l
+        _key_lt(h.keys[c], h.keys[i]) || break
+        _heap_swap!(h, i, c)
+        i = c
+    end
+    return i
+end
+
+"Insert `u` with key `k`, or change its key in place if already present."
+function Base.setindex!(h::CellHeap, k::DStarKey, u::Tuple{Int,Int})
+    i = Int(@inbounds h.pos[u[1], u[2]])
+    if i == 0
+        push!(h.cells, u)
+        push!(h.keys, k)
+        i = length(h.cells)
+        @inbounds h.pos[u[1], u[2]] = i
+        _sift_up!(h, i)
+    else
+        @inbounds old = h.keys[i]
+        @inbounds h.keys[i] = k
+        _key_lt(k, old) ? _sift_up!(h, i) : _sift_down!(h, i)
+    end
+    return h
+end
+
+function _heap_remove_at!(h::CellHeap, i::Int)
+    n = length(h.cells)
+    i != n && _heap_swap!(h, i, n)
+    u = pop!(h.cells)
+    pop!(h.keys)
+    @inbounds h.pos[u[1], u[2]] = 0
+    if i < n
+        _sift_up!(h, i) == i && _sift_down!(h, i)
+    end
+    return u
+end
+
+"Remove `u` if present (no-op otherwise)."
+function Base.delete!(h::CellHeap, u::Tuple{Int,Int})
+    i = Int(@inbounds h.pos[u[1], u[2]])
+    i != 0 && _heap_remove_at!(h, i)
+    return h
+end
+
+"Remove and return the smallest cell."
+heap_pop!(h::CellHeap) = _heap_remove_at!(h, 1)
+
+# ---------------- Allocation-free walkable neighbors ----------------
+# Same cells, in the same order, as `walkable_neighbors(u, pf)` (so tie-breaks
+# and extracted paths are unchanged), but yielded lazily instead of collected
+# into a fresh Vector on every call.
+
+struct WalkableNeighbors{PF<:DStarLite}
+    pf::PF
+    u::Tuple{Int,Int}
+end
+
+Base.IteratorSize(::Type{<:WalkableNeighbors}) = Base.SizeUnknown()
+Base.eltype(::Type{<:WalkableNeighbors}) = Tuple{Int,Int}
+
+_periodicity(::DStarLite{D,P}) where {D,P} = P
+
+@inline function Base.iterate(it::WalkableNeighbors, k::Int = 1)
+    pf = it.pf
+    nb = pf.neighborhood
+    wm = pf.walkmap
+    s1, s2 = size(wm)
+    P = _periodicity(pf)
+    p1, p2 = P isa Bool ? (P, P) : (P[1], P[2])
+    u1, u2 = it.u
+    @inbounds while k <= length(nb)
+        β = nb[k]
+        k += 1
+        n1 = p1 ? mod1(u1 + β[1], s1) : u1 + β[1]
+        n2 = p2 ? mod1(u2 + β[2], s2) : u2 + β[2]
+        if 1 <= n1 <= s1 && 1 <= n2 <= s2 && wm[n1, n2]
+            return ((n1, n2), k)
+        end
+    end
+    return nothing
+end
+
+@inline _neighbors(pl, u::Tuple{Int,Int}) = WalkableNeighbors(pl.pf, u)
+
+# ---------------- Planner ----------------
 
 # `PF` is the concrete pathfinder type so `delta_cost`/`walkable_neighbors`
 # dispatch statically in the hot loop (an abstract `DStarLite{D}` field would not).
@@ -15,16 +152,12 @@ mutable struct DStarLitePlanner{PF<:DStarLite}
     pf::PF
     g::Matrix{Float64}
     rhs::Matrix{Float64}
-    U::PriorityQueue{Tuple{Int,Int},Tuple{Float64,Float64}}
+    U::CellHeap
     km::Float64
     goal::Tuple{Int,Int}
     s_start::DStarStart
     s_last::DStarStart
     heuristic_kind::Symbol
-end
-
-@inline function _key_lt(a::Tuple{Float64,Float64}, b::Tuple{Float64,Float64})
-    return (a[1] < b[1]) || (a[1] == b[1] && a[2] < b[2])
 end
 
 @inline function heuristic_cost(
@@ -59,7 +192,7 @@ end
 function update_vertex!(pl::DStarLitePlanner, u::Tuple{Int,Int})
     if u != pl.goal
         min_rhs = Inf
-        for v in walkable_neighbors(u, pl.pf)
+        for v in _neighbors(pl, u)
             min_rhs = min(min_rhs, delta_cost(pl.pf, u, v) + pl.g[v...])
         end
         pl.rhs[u...] = min_rhs
@@ -69,11 +202,13 @@ function update_vertex!(pl::DStarLitePlanner, u::Tuple{Int,Int})
 end
 
 # Sync u's membership/key in U to its current g/rhs without touching rhs itself
-# (used where rhs has already been set by the caller).
+# (used where rhs has already been set by the caller). A key change is applied
+# in place by the heap rather than as delete + reinsert.
 @inline function sync_queue!(pl::DStarLitePlanner, u::Tuple{Int,Int})
-    haskey(pl.U, u) && delete!(pl.U, u)
     if pl.g[u...] != pl.rhs[u...]
         pl.U[u] = calc_key(pl, u)
+    else
+        delete!(pl.U, u)
     end
     return nothing
 end
@@ -81,9 +216,7 @@ end
 # Process the single top-of-queue vertex (one iteration of ComputeShortestPath's
 # inner body). Shared by the start-focused loop and the full-drain fallback.
 function _process_top!(pl::DStarLitePlanner)
-    pair = peek(pl.U)
-    u = pair.first
-    k_old = pair.second
+    u, k_old = heap_top(pl.U)
     k_new = calc_key(pl, u)
 
     if _key_lt(k_old, k_new)
@@ -93,8 +226,8 @@ function _process_top!(pl::DStarLitePlanner)
         # predecessors whose rhs can actually improve through u's new g,
         # instead of recomputing every neighbor's rhs from scratch.
         pl.g[u...] = pl.rhs[u...]
-        dequeue!(pl.U)
-        for s in walkable_neighbors(u, pl.pf)
+        heap_pop!(pl.U)
+        for s in _neighbors(pl, u)
             if s != pl.goal
                 cand = delta_cost(pl.pf, s, u) + pl.g[u...]
                 cand < pl.rhs[s...] && (pl.rhs[s...] = cand)
@@ -108,9 +241,9 @@ function _process_top!(pl::DStarLitePlanner)
         # rhs was actually derived from u's old g; the rest are untouched.
         g_old = pl.g[u...]
         pl.g[u...] = Inf
-        dequeue!(pl.U)
+        heap_pop!(pl.U)
         update_vertex!(pl, u)
-        for s in walkable_neighbors(u, pl.pf)
+        for s in _neighbors(pl, u)
             if pl.rhs[s...] == delta_cost(pl.pf, s, u) + g_old
                 update_vertex!(pl, s)
             else
@@ -125,7 +258,7 @@ function compute_shortest_path!(pl::DStarLitePlanner)
     while !isempty(pl.U)
         if pl.s_start !== nothing
             k_start = calc_key(pl, pl.s_start)
-            k_top = peek(pl.U).second
+            k_top = heap_top(pl.U)[2]
             if !(_key_lt(k_top, k_start) || pl.rhs[pl.s_start...] != pl.g[pl.s_start...])
                 break
             end
@@ -180,7 +313,7 @@ function _make_planner(
     g = fill(Inf, sz)
     rhs = fill(Inf, sz)
     rhs[goal...] = 0.0
-    U = PriorityQueue{Tuple{Int,Int},Tuple{Float64,Float64}}()
+    U = CellHeap(sz)
     hk = start === nothing ? :none : heuristic
     planner = DStarLitePlanner(pf, g, rhs, U, 0.0, goal, start, start, hk)
     U[goal] = calc_key(planner, goal)
@@ -254,7 +387,7 @@ function update_after_cm_change!(
     end
     for u in changed_cells
         update_vertex!(planner, u)
-        for v in walkable_neighbors(u, planner.pf)
+        for v in _neighbors(planner, u)
             update_vertex!(planner, v)
         end
     end
@@ -295,7 +428,7 @@ function extract_path(
 
         best = nothing
         best_val = Inf
-        for n in walkable_neighbors(cur, planner.pf)
+        for n in _neighbors(planner, cur)
             val = delta_cost(planner.pf, cur, n) + planner.g[n...]
             if val < best_val
                 best_val = val

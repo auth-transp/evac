@@ -420,7 +420,8 @@ end
 
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 1852
+    const T = 2500
+    # CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T = 2500 s.
     # Time counter is t = (frame - 1) * dt.
     const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
 
@@ -490,12 +491,15 @@ end
     posobs = Observable(Point2f.(xs0, ys0))
     colobs = Observable(colors0)
 
+    # One Observable per agent trail: each frame only appends the new points
+    # (instead of rebuilding the whole trail from pathX/pathY every frame).
+    trail_obs = [Observable([Point2f(a.pos[1], a.pos[2])]) for a in allagents(model)]
     lines_plots = [
         lines!(ax,
-               [a.pos[1]], [a.pos[2]];
+               trail_obs[i];
                color     = personcolor(a),
                linewidth = 2)
-        for a in allagents(model)
+        for (i, a) in enumerate(allagents(model))
     ]
     agent_scat = scatter!(ax, posobs;
                           color      = colobs,
@@ -536,6 +540,8 @@ end
     path_planning_replan_time = Ref(0.0)
     # Simulation time (step! calls only)
     simulation_time = Ref(0.0)
+    # Everything inside the record do-block (step!, replanning, observable updates, data collection)
+    frame_logic_time = Ref(0.0)
 
     # --- INIT D* Lite planners (one per exit) ---
     grid_dims = size(NPM_int)
@@ -563,7 +569,8 @@ end
     prev_NPM_int = copy(NPM_int)
 
 
-    record(fig, video_file, 1:T; framerate=30) do frame
+    record_time = @elapsed record(fig, video_file, 1:T; framerate=30) do frame
+        t_frame_start = time_ns()
         # update frame counter observable
         frame_obs[] = frame
 
@@ -578,6 +585,8 @@ end
         if new_idx != current_map_idx
             current_map_idx = new_idx
             penalty_map .= cm_list[current_map_idx]
+            # Update concentration map visualization (contour is recomputed only here, when the CM changes)
+            cm_obs[] = penalty_map
 
             # recompute combined penalty map
             NPM = heightmap .+ penalty_map
@@ -614,12 +623,13 @@ end
             println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
         end
 
-        # Update concentration map visualization
-        cm_obs[] = penalty_map
-
-        # 3) update trails/visuals as before
+        # 3) update trails/visuals: append only the points added to pathX/pathY since last frame
         for (i, a) in enumerate(allagents(model))
-            lines_plots[i][1][] = Point2f.(a.pathX, a.pathY)
+            trail = trail_obs[i][]
+            for k in (length(trail) + 1):length(a.pathX)
+                push!(trail, Point2f(a.pathX[k], a.pathY[k]))
+            end
+            notify(trail_obs[i])
         end
 
         xs = [a.pos[1] for a in allagents(model)]
@@ -639,7 +649,10 @@ end
         end
 
         # 5) record runs for T frames (fixed horizon)
+        frame_logic_time[] += (time_ns() - t_frame_start) / 1e9
     end
+    # Whatever record() spent outside our do-block is Makie rendering + ffmpeg encoding
+    render_time = record_time - frame_logic_time[]
 
     println("Το animation σώθηκε ως $video_file")
     CSV.write(csv_file, df)
@@ -652,6 +665,10 @@ end
     println("    - Initial pathfinding: ", round(path_planning_init_time[]; digits=6), " s")
     println("    - Replanning during CM changes: ", round(path_planning_replan_time[]; digits=6), " s")
     println("  Simulation time (step! only): ", round(simulation_time[]; digits=6), " s")
+    println("  Per-frame logic excl. step!/replan (observables, data collection): ",
+            round(frame_logic_time[] - simulation_time[] - path_planning_replan_time[]; digits=3), " s")
+    println("  Video rendering + encoding (record, excl. per-frame logic): ", round(render_time; digits=3), " s")
+    println("  Total record() time: ", round(record_time; digits=3), " s")
 end
 
 

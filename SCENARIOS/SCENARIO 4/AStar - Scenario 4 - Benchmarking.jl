@@ -336,12 +336,9 @@ const BENCHMARK_MAX_RUNS = 50
 const BENCHMARK_T_STEPS = 2500
 const BENCHMARK_TL_CAP_PER_AGENT = 3.0
 
-const CM_ACTIVE_FRACTION_BENCH = 0.7
-const CM_SWITCH_TIMES = collect(range(
-    0.0,
-    stop = CM_ACTIVE_FRACTION_BENCH * ((BENCHMARK_T_STEPS - 1) * dt),
-    length = NUM_CMS,
-))
+# CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T = 2500 s.
+const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
+@assert length(CM_SWITCH_TIMES) == NUM_CMS
 
 function format_active_goals_for_xlsx(active_idx::Vector{Int}, dests)
     idx_str = join(string.(active_idx), ";")
@@ -517,7 +514,7 @@ agent_tl_runs = Int[]
 agent_tl_ids = Int[]
 agent_tl_values = Float64[]
 
-println("Benchmark: Scenario 4 with A* (APM + CM replanning; goal combo index = evenly spaced over 1:N when runs ≤ N). Runs = $BENCHMARK_MAX_RUNS, agents = $n_agents, T = $BENCHMARK_T_STEPS, CM_active_fraction = $CM_ACTIVE_FRACTION_BENCH, N_combos = $(length(GOAL_COMBINATIONS)).")
+println("Benchmark: Scenario 4 with A* (APM + CM replanning; goal combo index = evenly spaced over 1:N when runs ≤ N). Runs = $BENCHMARK_MAX_RUNS, agents = $n_agents, T = $BENCHMARK_T_STEPS, CM switch times = $CM_SWITCH_TIMES, N_combos = $(length(GOAL_COMBINATIONS)).")
 for run_id in 1:BENCHMARK_MAX_RUNS
     t_init, t_incr, t_sim, run_seed, g_combo, sum_TL_capped, per_agent_TL_capped, agent_ids, K_a, idx_s, xy_s = run_one_benchmark(run_id)
     push!(initial_pf_times, t_init)
@@ -598,8 +595,8 @@ XLSX.openxlsx(xlsx_path, mode = "rw") do xf
     sh[n_runs + 6, 2] = avg_simulation_final
     sh[n_runs + 7, 1] = "BENCHMARK_T_STEPS"
     sh[n_runs + 7, 2] = BENCHMARK_T_STEPS
-    sh[n_runs + 8, 1] = "CM_ACTIVE_FRACTION_BENCH"
-    sh[n_runs + 8, 2] = CM_ACTIVE_FRACTION_BENCH
+    sh[n_runs + 8, 1] = "CM_SWITCH_TIMES_s"
+    sh[n_runs + 8, 2] = join(CM_SWITCH_TIMES, ", ")
     sh[n_runs + 9, 1] = "EnumeratedGoalCombinations_N"
     sh[n_runs + 9, 2] = length(GOAL_COMBINATIONS)
 end

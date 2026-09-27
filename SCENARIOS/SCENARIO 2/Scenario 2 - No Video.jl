@@ -309,7 +309,7 @@ end
 
 # Simulation without video creation - for timing measurements
 println("Starting simulation (no video)...")
-const T = 1852
+const T = 2500
 
 # -- Προετοιμασία DataFrame για θέση & toxicload ανά βήμα --
 df = DataFrame(

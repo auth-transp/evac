@@ -215,12 +215,9 @@ end
 const BENCHMARK_MAX_RUNS = 100
 const BENCHMARK_T_STEPS = 2500
 const BENCHMARK_TL_CAP_PER_AGENT = 3.0
-const CM_ACTIVE_FRACTION_BENCH = 0.7
-const CM_SWITCH_TIMES = collect(range(
-    0.0,
-    stop = CM_ACTIVE_FRACTION_BENCH * ((BENCHMARK_T_STEPS - 1) * dt),
-    length = NUM_CMS,
-))
+# CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T = 2500 s.
+const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
+@assert length(CM_SWITCH_TIMES) == NUM_CMS
 
 """
     run_one_benchmark() -> (initial_pf, incremental_pf, sim_time, seed, sum_TL_capped, final_tl_map_idx, tl_map_switch_count, per_agent_TL_capped, agent_ids)

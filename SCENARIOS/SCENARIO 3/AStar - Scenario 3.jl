@@ -355,16 +355,11 @@ function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλο
 end
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 1852
-    # Spread CM transitions evenly over the first 8/10 of the simulation time (same as DStarLite).
+    const T = 2500
+    # CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T = 2500 s.
     # Time counter is t = (frame - 1) * dt.
-    const CM_ACTIVE_FRACTION = 0.8
     const NUM_MAPS = NUM_CMS
-    const CM_SWITCH_TIMES = collect(range(
-        0.0,
-        stop = CM_ACTIVE_FRACTION * ((T - 1) * dt),
-        length = NUM_MAPS,
-    ))
+    const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
 # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))
     ax  = Makie.Axis(fig[1,1];

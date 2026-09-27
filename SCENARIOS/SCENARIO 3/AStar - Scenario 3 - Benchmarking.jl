@@ -8,6 +8,7 @@ begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Images
     using Random
     using Profile
+    using Statistics
     using BenchmarkTools
 end
 
@@ -259,31 +260,40 @@ function update_toxic_load(Ct, TLcurrent, dt)
 end
 
 # --- Benchmark parameters (match DStarLite Scenario 3 Benchmarking) ---
+const BENCHMARK_ALGORITHM = "AStar"
 const BENCHMARK_MAX_RUNS = 100
-const BENCHMARK_T_STEPS = 2500
+const BENCHMARK_AGENT_COUNTS = [5, 10, 25, 50, 75, 100]   # one Excel sheet per count
 const BENCHMARK_TL_CAP_PER_AGENT = 3.0
+const TL_INCAPACITATED = 3.0          # TL at which speed drops to 0 (see agent_step!)
+const PROJECTION_MAX_STEPS = 10800    # max extra (untimed) steps (3 h) to resolve stranded agents after T
 
-const CM_ACTIVE_FRACTION_BENCH = 0.7
-const CM_SWITCH_TIMES = collect(range(
-    0.0,
-    stop = CM_ACTIVE_FRACTION_BENCH * ((BENCHMARK_T_STEPS - 1) * dt),
-    length = NUM_CMS,
-))
+# Horizon T = 2500 s and CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T.
+# t = (step_idx - 1) * dt
+const BENCHMARK_T_STEPS = 2500
+const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
+@assert length(CM_SWITCH_TIMES) == NUM_CMS "CM_SWITCH_TIMES must have one entry per concentration map"
+
+# Warm-up run (JIT compilation) — its results are discarded. It only needs to reach the
+# first CM switch so that the replanning code path is compiled too.
+const WARMUP_T_STEPS = Int(CM_SWITCH_TIMES[2] / dt) + 2
 
 """
-    run_one_benchmark() -> (initial_pf, incremental_pf, sim_time, seed, sum_TL_capped, per_agent_TL_capped, agent_ids)
+    run_one_benchmark(; num_agents, t_steps = BENCHMARK_T_STEPS, project = true) -> (run_metrics, agent_rows)
 
 Same contract as `DStarLite - Scenario 3 - Benchmarking.jl`, but initial pathfinding is
 `plan_best_route!` for every agent after syncing CM1 into the A* penalty map, and incremental
 work updates `Pathfinding.penaltymap` in place and replans with `plan_best_route!`.
 """
-function run_one_benchmark()
+function run_one_benchmark(; num_agents::Int, t_steps::Int = BENCHMARK_T_STEPS, project::Bool = true)
     seed = rand(Random.RandomDevice(), UInt32)
     rng_run = MersenneTwister(seed)
 
     local_NPM_int = copy(NPM_int)
+    # Fresh space per run: ContinuousSpace keeps its own spatial index of agent ids, so a shared
+    # space would carry stale ids from earlier models (warm-up / previous runs) into this one.
+    local_space = ContinuousSpace(size(NPM); periodic = false, spacing = 1)
     local_cost_metric_obj = AbsolutePenaltyMap(local_NPM_int, MaxDistance{2}())
-    local_pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = local_cost_metric_obj)
+    local_pathfinderPM = AStar(local_space; walkmap = walkmap, cost_metric = local_cost_metric_obj)
     local_properties = (
         pathfinderPM = local_pathfinderPM,
         heightmap    = heightmap,
@@ -294,14 +304,14 @@ function run_one_benchmark()
 
     model_run = ABM(
         AgentEscapes,
-        space;
+        local_space;
         rng         = rng_run,
         properties  = local_properties,
         agent_step! = agent_step!,
         model_step! = model_step!,
     )
 
-    for _ in 1:n_agents
+    for _ in 1:num_agents
         age = rand(abmrng(model_run)) * (age_range[2] - age_range[1]) + age_range[1]
         mass = rand(abmrng(model_run)) * (mass_range[2] - mass_range[1]) + mass_range[1]
         vel = Tuple(rand(abmrng(model_run), 2) .* (speed_range[2] - speed_range[1]) .+ speed_range[1])
@@ -334,22 +344,26 @@ function run_one_benchmark()
     @. local_NPM_int = Int(round(heightmap + penalty_map))
     Pathfinding.penaltymap(local_pathfinderPM) .= local_NPM_int
 
-    initial_pf_time = @elapsed begin
-        for a in allagents(model_run)
-            plan_best_route!(a, dests, local_pathfinderPM)
-        end
+    tm_init = @timed for a in allagents(model_run)
+        plan_best_route!(a, dests, local_pathfinderPM)
     end
 
+    initial_pf_time = tm_init.time
+    pf_bytes = tm_init.bytes
+    pf_gc = tm_init.gctime
     replan_time = 0.0
     sim_step_time = 0.0
+    evac_t = Dict{Int,Float64}()
+    tl3_t = Dict{Int,Float64}()
 
-    for step_idx in 1:BENCHMARK_T_STEPS
+    for step_idx in 1:t_steps
         sim_step_time += @elapsed step!(model_run, 1)
+        track_outcomes!(evac_t, tl3_t, model_run, step_idx * dt)
         t_sim = (step_idx - 1) * dt
         new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)
         if new_idx != current_map_idx
             current_map_idx = new_idx
-            replan_time += @elapsed begin
+            tm_replan = @timed begin
                 penalty_map .= cm_list[current_map_idx]
                 @. local_NPM_int = Int(round(heightmap + penalty_map))
                 Pathfinding.penaltymap(local_pathfinderPM) .= local_NPM_int
@@ -357,113 +371,276 @@ function run_one_benchmark()
                     plan_best_route!(a, model_run.goal, local_pathfinderPM)
                 end
             end
+            replan_time += tm_replan.time
+            pf_bytes += tm_replan.bytes
+            pf_gc += tm_replan.gctime
         end
     end
 
-    incremental_pf_time = replan_time
-    simulation_time = sim_step_time
+    route_of = a -> get(local_pathfinderPM.agent_paths, a.id, ())
+    outcomes, agent_rows = evaluate_outcomes!(
+        model_run, route_of, evac_t, tl3_t, t_steps * dt; project = project,
+    )
+    timings = (
+        Seed            = Int(seed),
+        InitialPF_s     = initial_pf_time,
+        IncrementalPF_s = replan_time,
+        TotalPF_s       = initial_pf_time + replan_time,
+        Simulation_s    = sim_step_time,
+        PF_Alloc_MB     = pf_bytes / 2^20,
+        PF_GC_s         = pf_gc,
+    )
+    return merge(timings, outcomes), agent_rows
+end
 
-    agents_sorted = sort(collect(allagents(model_run)), by = a -> a.id)
-    sum_TL_capped = 0.0
-    per_agent_TL_capped = Float64[]
-    agent_ids = Int[]
-    for a in agents_sorted
-        tl_cap = min(a.toxicload, BENCHMARK_TL_CAP_PER_AGENT)
-        sum_TL_capped += tl_cap
-        push!(per_agent_TL_capped, tl_cap)
-        push!(agent_ids, a.id)
+# ---------------- Outcome tracking: Evacuated / Incapacitated / Stranded ----------------
+
+"""
+    track_outcomes!(evac_t, tl3_t, model, t_now)
+
+Record the first time `t_now` at which each agent reaches an exit (`evac_t`) or
+TL ≥ TL_INCAPACITATED (`tl3_t`). Called after every `step!`, outside the timed regions.
+"""
+function track_outcomes!(evac_t::Dict{Int,Float64}, tl3_t::Dict{Int,Float64}, model, t_now::Float64)
+    for a in allagents(model)
+        (haskey(evac_t, a.id) || haskey(tl3_t, a.id)) && continue
+        if at_goal(a.pos, model.goal)
+            evac_t[a.id] = t_now
+        elseif a.toxicload >= TL_INCAPACITATED
+            tl3_t[a.id] = t_now
+        end
+    end
+    return nothing
+end
+
+"Length (m) of the remaining route from `pos` through `waypoints`."
+function route_length_m(pos, waypoints)
+    L = 0.0
+    px, py = Float64(pos[1]), Float64(pos[2])
+    for w in waypoints
+        wx, wy = Float64(w[1]), Float64(w[2])
+        L += hypot(wx - px, wy - py)
+        px, py = wx, wy
+    end
+    return L / METERS_TO_PIXELS
+end
+
+_mean_or_missing(v) = isempty(v) ? missing : mean(v)
+_max_or_missing(v) = isempty(v) ? missing : maximum(v)
+
+"""
+    evaluate_outcomes!(model_run, route_of, evac_t, tl3_t, t_horizon; project = true)
+        -> (outcome_metrics, agent_rows)
+
+Classifies every agent at the horizon T:
+
+- Evacuated:     reached an exit within T
+- Incapacitated: reached TL ≥ TL_INCAPACITATED within T
+- Stranded:      still en route at T with TL < TL_INCAPACITATED
+
+Stranded agents are then resolved by a projection: the model keeps running after T
+under the last concentration map (no replanning, NOT timed) for at most
+PROJECTION_MAX_STEPS, until every agent has evacuated, become incapacitated, or has no
+route left. `Proj_*` fields describe that projected outcome (for agents already resolved
+within T it equals the outcome at T). `route_of(a)` returns the agent's remaining waypoints.
+"""
+function evaluate_outcomes!(model_run, route_of, evac_t, tl3_t, t_horizon; project::Bool = true)
+    agents_sorted = sort(collect(allagents(model_run)); by = a -> a.id)
+    snap_tl = Dict(a.id => a.toxicload for a in agents_sorted)
+    snap_dist = Dict(a.id => route_length_m(a.pos, route_of(a)) for a in agents_sorted)
+    evac_T = copy(evac_t)
+    tl3_T = copy(tl3_t)
+
+    proj_steps = 0
+    if project
+        is_open = a -> !(haskey(evac_t, a.id) || haskey(tl3_t, a.id) || isempty(route_of(a)))
+        while proj_steps < PROJECTION_MAX_STEPS && any(is_open, allagents(model_run))
+            step!(model_run, 1)
+            proj_steps += 1
+            track_outcomes!(evac_t, tl3_t, model_run, t_horizon + proj_steps * dt)
+        end
     end
 
-    return initial_pf_time, incremental_pf_time, simulation_time, seed, sum_TL_capped, per_agent_TL_capped, agent_ids
+    rows = NamedTuple[]
+    for a in agents_sorted
+        outcome_T = haskey(evac_T, a.id) ? "Evacuated" :
+                    haskey(tl3_T, a.id)  ? "Incapacitated" : "Stranded"
+        proj_outcome = haskey(evac_t, a.id) ? "Evacuated" :
+                       haskey(tl3_t, a.id)  ? "Incapacitated" :
+                       isempty(route_of(a)) ? "NoRoute" : "Unresolved"
+        proj_time = haskey(evac_t, a.id) ? evac_t[a.id] :
+                    haskey(tl3_t, a.id)  ? tl3_t[a.id] : missing
+        push!(rows, (
+            AgentID           = a.id,
+            Outcome_T         = outcome_T,
+            TL_T              = snap_tl[a.id],
+            TL_T_capped       = min(snap_tl[a.id], BENCHMARK_TL_CAP_PER_AGENT),
+            EvacTime_s        = get(evac_T, a.id, missing),
+            TL3Time_s         = get(tl3_T, a.id, missing),
+            RemainingDist_T_m = outcome_T == "Evacuated" ? 0.0 : snap_dist[a.id],
+            Proj_Outcome      = proj_outcome,
+            Proj_Time_s       = proj_time,
+            Proj_TL           = a.toxicload,
+        ))
+    end
+
+    stranded = [r for r in rows if r.Outcome_T == "Stranded"]
+    metrics = (
+        SumTL_capped                  = sum((r.TL_T_capped for r in rows); init = 0.0),
+        Evacuated                     = count(r -> r.Outcome_T == "Evacuated", rows),
+        Incapacitated                 = count(r -> r.Outcome_T == "Incapacitated", rows),
+        Stranded                      = length(stranded),
+        EvacTime_mean_s               = _mean_or_missing(collect(values(evac_T))),
+        EvacTime_max_s                = _max_or_missing(collect(values(evac_T))),
+        Stranded_TL_mean              = _mean_or_missing([r.TL_T for r in stranded]),
+        Stranded_RemainingDist_mean_m = _mean_or_missing([r.RemainingDist_T_m for r in stranded]),
+        Proj_Evacuated                = count(r -> r.Proj_Outcome == "Evacuated", rows),
+        Proj_Incapacitated            = count(r -> r.Proj_Outcome == "Incapacitated", rows),
+        Proj_NoRoute                  = count(r -> r.Proj_Outcome == "NoRoute", rows),
+        Proj_Unresolved               = count(r -> r.Proj_Outcome == "Unresolved", rows),
+        Proj_EvacTime_max_s           = _max_or_missing(collect(values(evac_t))),
+        Proj_Steps                    = proj_steps,
+    )
+    return metrics, rows
+end
+
+# ---------------- Excel export: Summary + one sheet per agent count + AgentOutcomes ----------------
+
+const STAT_NAMES = ("Mean", "Median", "Std", "Min", "Max")
+const SUMMARY_METRICS = (
+    :InitialPF_s, :IncrementalPF_s, :TotalPF_s, :Simulation_s, :PF_Alloc_MB,
+    :SumTL_capped, :Evacuated, :Incapacitated, :Stranded,
+    :Proj_Evacuated, :Proj_Incapacitated, :Proj_Unresolved,
+)
+
+function column_stats(v)
+    x = Float64[Float64(y) for y in v if !ismissing(y)]
+    isempty(x) && return (missing, missing, missing, missing, missing)
+    return (mean(x), median(x), length(x) > 1 ? std(x) : missing, minimum(x), maximum(x))
+end
+
+function rows_to_columns(rows)
+    ks = collect(keys(first(rows)))
+    return ks, [[r[k] for r in rows] for k in ks]
 end
 
 """
-    profile_one_benchmark()
+    write_benchmark_xlsx(path, algorithm, results)
+
+`results` is a vector of `(n, runs, agents)`. Rewrites the whole workbook, so it is called
+after every completed agent count and the file always holds everything finished so far.
+"""
+function write_benchmark_xlsx(path, algorithm, results)
+    XLSX.openxlsx(path, mode = "w") do xf
+        summary = xf[1]
+        XLSX.rename!(summary, "Summary")
+        all_stats = Dict{Symbol,Any}[]
+
+        for res in results
+            sh = XLSX.addsheet!(xf, "N$(res.n)")
+            ks, cols = rows_to_columns(res.runs)
+            XLSX.writetable!(sh, cols, string.(ks))
+            # statistics block under the runs (blank row in between), aligned with the columns
+            r0 = length(res.runs) + 3
+            for (si, sname) in enumerate(STAT_NAMES)
+                sh[r0 + si - 1, 1] = sname
+            end
+            stats = Dict{Symbol,Any}()
+            for (ci, k) in enumerate(ks)
+                k in (:Run, :Seed) && continue
+                st = column_stats(cols[ci])
+                stats[k] = st
+                for si in eachindex(STAT_NAMES)
+                    ismissing(st[si]) || (sh[r0 + si - 1, ci] = st[si])
+                end
+            end
+            push!(all_stats, stats)
+        end
+
+        s_names = ["NAgents", "Runs"]
+        s_cols = Any[[res.n for res in results], [length(res.runs) for res in results]]
+        for m in SUMMARY_METRICS, (si, suffix) in ((1, "mean"), (2, "median"), (3, "std"))
+            push!(s_names, "$(m)_$(suffix)")
+            push!(s_cols, [stats[m][si] for stats in all_stats])
+        end
+        XLSX.writetable!(summary, s_cols, s_names)
+
+        config = [
+            ("Algorithm", algorithm),
+            ("Runs per agent count", BENCHMARK_MAX_RUNS),
+            ("Horizon T (steps)", BENCHMARK_T_STEPS),
+            ("dt (s)", dt),
+            ("CM switch times (s)", join(CM_SWITCH_TIMES, ", ")),
+            ("Warm-up (excluded from results)", "1 run, $WARMUP_T_STEPS steps"),
+            ("Incapacitation threshold (TL)", TL_INCAPACITATED),
+            ("Projection after T", "last CM kept, no replanning, not timed, max $PROJECTION_MAX_STEPS steps"),
+            ("Seeds", "random per run (RandomDevice)"),
+        ]
+        c0 = length(results) + 3
+        for (i, (label, value)) in enumerate(config)
+            summary[c0 + i - 1, 1] = label
+            summary[c0 + i - 1, 2] = value
+        end
+
+        ag = XLSX.addsheet!(xf, "AgentOutcomes")
+        all_agents = reduce(vcat, [res.agents for res in results])
+        ks, cols = rows_to_columns(all_agents)
+        XLSX.writetable!(ag, cols, string.(ks))
+    end
+end
+
+"""
+    profile_one_benchmark(; num_agents = first(BENCHMARK_AGENT_COUNTS))
 Profile one benchmark run. After running, call Profile.print() or your profiler GUI.
 """
-function profile_one_benchmark()
+function profile_one_benchmark(; num_agents::Int = first(BENCHMARK_AGENT_COUNTS))
     Profile.clear()
-    init_t, incr_t, sim_t, run_seed, sum_cap, _, _ = run_one_benchmark()
-    println("Profiled run (seed=$run_seed): initial PF = $(round(init_t; digits=4)) s, incremental PF = $(round(incr_t; digits=4)) s, simulation = $(round(sim_t; digits=4)) s, sum TL (capped max $(BENCHMARK_TL_CAP_PER_AGENT) per agent) = $(round(sum_cap; digits=4))")
+    r, _ = @profile run_one_benchmark(; num_agents = num_agents, project = false)
+    println("Profiled run (seed=$(r.Seed), N=$num_agents): initial PF = $(round(r.InitialPF_s; digits=4)) s, incremental PF = $(round(r.IncrementalPF_s; digits=4)) s, simulation = $(round(r.Simulation_s; digits=4)) s")
     println("Run Profile.print() or open profiler to inspect hotspots.")
 end
 
 """
-    benchmark_run_one_benchmark(; samples = 10)
+    benchmark_run_one_benchmark(; num_agents = first(BENCHMARK_AGENT_COUNTS), samples = 10)
 
 Use BenchmarkTools to benchmark a single `run_one_benchmark()` invocation.
 Returns the BenchmarkTools Trial object and also prints a summary.
 """
-function benchmark_run_one_benchmark(; samples::Int = 10)
-    println("Benchmarking run_one_benchmark() with BenchmarkTools (samples = $samples)...")
-    result = @benchmark run_one_benchmark() samples = samples
+function benchmark_run_one_benchmark(; num_agents::Int = first(BENCHMARK_AGENT_COUNTS), samples::Int = 10)
+    println("Benchmarking run_one_benchmark() with BenchmarkTools (N = $num_agents, samples = $samples)...")
+    result = @benchmark run_one_benchmark(; num_agents = $num_agents, project = false) samples = samples
     println(result)
     return result
 end
 
-# --- Benchmark loop ---
-initial_pf_times   = Float64[]
-incremental_pf_times = Float64[]
-simulation_times   = Float64[]
-sum_TL_capped_values = Float64[]
-seeds = UInt32[]
-agent_tl_runs = Int[]
-agent_tl_ids = Int[]
-agent_tl_values = Float64[]
-
-println("Benchmark: Scenario 3 with A* (pathfinding + simulation). Runs = $BENCHMARK_MAX_RUNS.")
-for run_id in 1:BENCHMARK_MAX_RUNS
-    t_init, t_incr, t_sim, run_seed, sum_TL_capped, per_agent_TL_capped, agent_ids = run_one_benchmark()
-    push!(initial_pf_times,    t_init)
-    push!(incremental_pf_times, t_incr)
-    push!(simulation_times,     t_sim)
-    push!(sum_TL_capped_values, sum_TL_capped)
-    push!(seeds, run_seed)
-    for k in eachindex(per_agent_TL_capped)
-        push!(agent_tl_runs, run_id)
-        push!(agent_tl_ids, agent_ids[k])
-        push!(agent_tl_values, per_agent_TL_capped[k])
-    end
-
-    n = length(initial_pf_times)
-    avg_initial_pf    = sum(initial_pf_times)    / n
-    avg_incremental_pf = sum(incremental_pf_times) / n
-    avg_simulation    = sum(simulation_times)    / n
-
-    println("  Run $run_id (seed=$run_seed): initial PF = $(round(t_init; digits=4)) s, incremental PF = $(round(t_incr; digits=4)) s, simulation = $(round(t_sim; digits=4)) s, sum TL capped = $(round(sum_TL_capped; digits=4))  (avg total PF = $(round(avg_initial_pf + avg_incremental_pf; digits=4)) s)")
-end
-
-n_runs = length(initial_pf_times)
-avg_initial_pf_final    = sum(initial_pf_times)    / n_runs
-avg_incremental_pf_final = sum(incremental_pf_times) / n_runs
-avg_pathfinding_final   = avg_initial_pf_final + avg_incremental_pf_final
-avg_simulation_final  = sum(simulation_times)  / n_runs
+# ---------------- Benchmark sweep over agent counts ----------------
 
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
-xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/AStar $(n_agents) Agents Benchmarking_$(run_timestamp).xlsx"
-run_ids = collect(1:n_runs)
-columns_data = [run_ids, seeds, initial_pf_times, incremental_pf_times, simulation_times, sum_TL_capped_values]
-column_names = ["Run", "Seed", "InitialPathfindingTime_s", "IncrementalPathfindingTime_s", "SimulationTime_s", "SumTL_capped"]
-agent_columns_data = [agent_tl_runs, agent_tl_ids, agent_tl_values]
-agent_column_names = ["Run", "AgentID", "TL_capped_max3"]
-XLSX.writetable(xlsx_path;
-    Runs=(columns_data, column_names),
-    AgentTL=(agent_columns_data, agent_column_names),
-    overwrite=true,
-)
-XLSX.openxlsx(xlsx_path, mode = "rw") do xf
-    sh = xf["Runs"]
-    sh[n_runs + 2, 1] = "Number of runs"
-    sh[n_runs + 2, 2] = n_runs
-    sh[n_runs + 3, 1] = "Average initial pathfinding time (s)"
-    sh[n_runs + 3, 2] = avg_initial_pf_final
-    sh[n_runs + 4, 1] = "Average incremental pathfinding time (s)"
-    sh[n_runs + 4, 2] = avg_incremental_pf_final
-    sh[n_runs + 5, 1] = "Average total pathfinding time (s)"
-    sh[n_runs + 5, 2] = avg_pathfinding_final
-    sh[n_runs + 6, 1] = "Average simulation time (s)"
-    sh[n_runs + 6, 2] = avg_simulation_final
+xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/$(BENCHMARK_ALGORITHM) Benchmarking_$(run_timestamp).xlsx"
+
+println("Benchmark: Scenario 3 with $BENCHMARK_ALGORITHM. Agent counts = $BENCHMARK_AGENT_COUNTS, runs per count = $BENCHMARK_MAX_RUNS.")
+
+# Warm-up (JIT compilation): executed once, results discarded — not part of the exported statistics.
+println("  Warm-up run ($WARMUP_T_STEPS steps, excluded from results)...")
+warmup_elapsed = @elapsed run_one_benchmark(; num_agents = first(BENCHMARK_AGENT_COUNTS), t_steps = WARMUP_T_STEPS, project = false)
+println("  Warm-up done in $(round(warmup_elapsed; digits=2)) s.")
+
+benchmark_results = NamedTuple[]
+for n in BENCHMARK_AGENT_COUNTS
+    println("=== N = $n agents ===")
+    runs = NamedTuple[]
+    agents = NamedTuple[]
+    for run_id in 1:BENCHMARK_MAX_RUNS
+        r, agent_rows = run_one_benchmark(; num_agents = n)
+        push!(runs, merge((Run = run_id,), r))
+        append!(agents, [merge((NAgents = n, Run = run_id, Seed = r.Seed), row) for row in agent_rows])
+        println("  Run $run_id (seed=$(r.Seed)): initial PF = $(round(r.InitialPF_s; digits=4)) s, incremental PF = $(round(r.IncrementalPF_s; digits=4)) s, simulation = $(round(r.Simulation_s; digits=4)) s, alloc PF = $(round(r.PF_Alloc_MB; digits=1)) MB | evacuated $(r.Evacuated), incapacitated $(r.Incapacitated), stranded $(r.Stranded) → projected evac $(r.Proj_Evacuated) / incap $(r.Proj_Incapacitated) / unresolved $(r.Proj_Unresolved)")
+    end
+    push!(benchmark_results, (n = n, runs = runs, agents = agents))
+    # Saved after every agent count, so a crash never loses completed counts.
+    write_benchmark_xlsx(xlsx_path, BENCHMARK_ALGORITHM, benchmark_results)
+    tot = [r.TotalPF_s for r in runs]
+    println("  N = $n done: total PF mean = $(round(mean(tot); digits=4)) s, median = $(round(median(tot); digits=4)) s. Saved to $xlsx_path")
 end
 
 println("Benchmark complete. Results written to $xlsx_path")
-println("  Total runs: $n_runs | Avg initial PF: $(round(avg_initial_pf_final; digits=4)) s | Avg incremental PF: $(round(avg_incremental_pf_final; digits=4)) s | Avg simulation: $(round(avg_simulation_final; digits=4)) s")

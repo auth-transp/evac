@@ -334,7 +334,7 @@ end
 
 begin   # Ξ”Ξ·ΞΌΞΉΞΏΟ…ΟΞ³Ξ―Ξ± animation ΞΌΞµ trails & ΟƒΟ…Ξ»Ξ»ΞΏΞ³Ξ® CSV ΞΈΞ­ΟƒΞ·Ο‚ ΞΊΞ±ΞΉ toxicload
     # ~1852 s = 2.5 km / 1.35 m/s straight-line scale; A* path is longer → more steps
-    T = 3100
+    T = 2500
 
     # -- Ξ£Ο„Ξ®ΟƒΞΉΞΌΞΏ Figure & Axis --
     fig = Figure(; size = (800,800))

@@ -354,9 +354,10 @@ end
 
 
 begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    T = 3375
-    const CM_ACTIVE_FRACTION = 0.7
-    cm_switch_times = collect(range(0.0, stop = CM_ACTIVE_FRACTION * ((T - 1) * dt), length = NUM_CMS))
+    T = 2500
+    # CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T = 2500 s.
+    cm_switch_times = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
+    @assert length(cm_switch_times) == NUM_CMS
     tl_map_idx = Ref(1)
     tl_penalty_map .= cm_list[tl_map_idx[]]
     NPM .= heightmap .+ tl_penalty_map

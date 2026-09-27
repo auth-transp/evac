@@ -384,7 +384,7 @@ end
 
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
-    const T = 3100
+    const T = 2500
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))

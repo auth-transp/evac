@@ -134,4 +134,43 @@ end
         @test (4, 4) ∉ path
         @test _travel_cost(pf_pen, path) ≈ pl.g[new_start...]
     end
+
+    @testset "CellHeap keeps min-order under insert / key change / delete" begin
+        H = Agents.Pathfinding.CellHeap((20, 20))
+        ref = Dict{Tuple{Int,Int},Tuple{Float64,Float64}}()
+        rng = Xoshiro(7)
+        for _ in 1:2000
+            u = (rand(rng, 1:20), rand(rng, 1:20))
+            if rand(rng) < 0.3
+                delete!(H, u); delete!(ref, u)
+            else
+                k = (Float64(rand(rng, 0:50)), Float64(rand(rng, 0:50)))
+                H[u] = k; ref[u] = k
+            end
+            @test length(H) == length(ref)
+            @test all(haskey(H, v) for v in keys(ref))
+        end
+        popped = Tuple{Float64,Float64}[]
+        while !isempty(H)
+            u, k = Agents.Pathfinding.heap_top(H)
+            @test ref[u] == k
+            @test Agents.Pathfinding.heap_pop!(H) == u
+            @test !haskey(H, u)
+            push!(popped, k)
+        end
+        @test issorted(popped)
+        @test length(popped) == length(ref)
+    end
+
+    @testset "lazy neighbors match walkable_neighbors" begin
+        wm = trues(6, 5); wm[2, 2] = false; wm[5, 4] = false
+        for periodic in (false, true), diag in (true, false)
+            pf = DStarLite((6, 5); periodic, diagonal_movement = diag, walkmap = copy(wm))
+            for I in CartesianIndices(wm)
+                u = Tuple(I)
+                @test collect(Agents.Pathfinding.WalkableNeighbors(pf, u)) ==
+                      Agents.Pathfinding.walkable_neighbors(u, pf)
+            end
+        end
+    end
 end
