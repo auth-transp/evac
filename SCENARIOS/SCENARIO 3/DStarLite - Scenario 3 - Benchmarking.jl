@@ -83,18 +83,27 @@ begin
 end
 
 function move_along_precomputed_path!(agent::AgentEscapes, speed, dt)
+    # Αν δεν υπάρχει μονοπάτι (άδειο path), δεν κάνει τίποτα
     isempty(agent.path) && return
+    # επόμενος grid στόχος: το πρώτο cell του path είναι ο τρέχων στόχος
     cell = agent.path[1]
     target = SVector{2,Float64}(cell[1], cell[2])
+    # διάνυσμα και απόσταση από την τρέχουσα θέση προς τον στόχο
     dir = target .- agent.pos
     dist = norm(dir)
     # dist == 0: already on waypoint; must pop without dividing (speed==0 ⇒ 0 < speed*dt is false and 0/0 → NaN)
+    # Αν ο agent είναι ήδη στον στόχο (dist == 0) ή τον φτάνει μέσα σε αυτό το βήμα
+    # (dist < speed*dt), τον τοποθετεί ακριβώς πάνω του (χωρίς overshoot).
+    # Το iszero(dist) είναι απαραίτητο: με speed == 0 η συνθήκη 0 < 0 είναι ψευδής
+    # και η διαίρεση dir/dist θα έδινε 0/0 → NaN.
     if iszero(dist) || dist < speed * dt
         agent.pos = target
-        popfirst!(agent.path)
+        popfirst!(agent.path)   # πήγες στο cell: αφαιρείται ώστε την επόμενη κλήση να στοχεύσει το επόμενο
     else
+        # Διαφορετικά κινείται κατά speed*dt προς τον στόχο (dir/dist = μοναδιαίο διάνυσμα κατεύθυνσης)
         agent.pos += (dir / dist) * speed * dt
     end
+    # Σημείωση: ολοκληρώνεται το πολύ ένα waypoint ανά κλήση· το περισσεύον βήμα δεν μεταφέρεται στο επόμενο cell.
 end
 
 #

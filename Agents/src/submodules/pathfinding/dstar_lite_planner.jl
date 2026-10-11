@@ -1,11 +1,12 @@
-# Incremental D* Lite (Koenig & Likhachev, AAAI 2002 / JAIR 2004).
+# Incremental D* Lite — optimized version (Koenig & Likhachev, AAAI 2002,
+# Figure 4, see LITERATURE/DStarLite.pdf). Comments `{NN''}` refer to its lines.
 #
 # Two modes share one struct:
-# - Full-field (`s_start === nothing`): expand until `U` is empty. Reverse LPA*
-#   / Dijkstra from the goal so any cell can call `extract_path` (Scenario 3).
-# - Focused (`s_start` set): stop when `U.TopKey ≥ CalculateKey(s_start)` and
-#   `rhs(s_start) == g(s_start)`. Heuristic is `h(s_start, s)`; `km` tracks
-#   start motion.
+# - Focused (`s_start` set): Figure 4 as written.
+# - Full-field (`s_start === nothing`): the same procedures with h ≡ 0 and
+#   CalculateKey(s_start) ≡ [∞; ∞], so {10''} runs until U is empty and `g` is
+#   the cost-to-go of every cell (one planner per exit shared by all agents,
+#   Scenario 3). This is the "D* Lite without heuristic search" of Figs. 6–8.
 
 const DStarStart = Union{Nothing,Tuple{Int,Int}}
 const DStarKey = Tuple{Float64,Float64}
@@ -158,6 +159,9 @@ mutable struct DStarLitePlanner{PF<:DStarLite}
     s_start::DStarStart
     s_last::DStarStart
     heuristic_kind::Symbol
+    # Penalty map the current edge costs were last read from: gives c_old in
+    # {41''} when the caller has already overwritten the live penalty map.
+    known_pmap::Union{Nothing,Matrix{Int}}
 end
 
 @inline function heuristic_cost(
@@ -167,7 +171,7 @@ end
 )
     hk = pl.heuristic_kind
     if hk === :delta_cost
-        return delta_cost(pl.pf, from, to)
+        return Float64(delta_cost(pl.pf, _heuristic_metric(pl.pf.cost_metric), from, to))
     elseif hk === :manhattan
         d = position_delta(pl.pf, from, to)
         return Float64(d[1] + d[2])
@@ -189,100 +193,66 @@ end
     return (m + heuristic(pl, s) + pl.km, m)
 end
 
-function update_vertex!(pl::DStarLitePlanner, u::Tuple{Int,Int})
-    if u != pl.goal
-        min_rhs = Inf
-        for v in _neighbors(pl, u)
-            min_rhs = min(min_rhs, delta_cost(pl.pf, u, v) + pl.g[v...])
-        end
-        pl.rhs[u...] = min_rhs
+# min_{s' ∈ Succ(u)} (c(u,s') + g(s')), as in {27''} / {46''}.
+@inline function _min_succ(pl::DStarLitePlanner, u::Tuple{Int,Int})
+    m = Inf
+    for v in _neighbors(pl, u)
+        m = min(m, delta_cost(pl.pf, u, v) + pl.g[v...])
     end
-    sync_queue!(pl, u)
-    return nothing
+    return m
 end
 
-# Sync u's membership/key in U to its current g/rhs without touching rhs itself
-# (used where rhs has already been set by the caller). A key change is applied
-# in place by the heap rather than as delete + reinsert.
-@inline function sync_queue!(pl::DStarLitePlanner, u::Tuple{Int,Int})
+# UpdateVertex {07''-09''}: only syncs u's queue membership/key with g/rhs; the
+# optimized version sets rhs at the call sites. The heap applies U.Update in place.
+@inline function update_vertex!(pl::DStarLitePlanner, u::Tuple{Int,Int})
     if pl.g[u...] != pl.rhs[u...]
-        pl.U[u] = calc_key(pl, u)
+        pl.U[u] = calc_key(pl, u)                 # {07''} / {08''}
     else
-        delete!(pl.U, u)
+        delete!(pl.U, u)                          # {09''} (no-op if u ∉ U)
     end
     return nothing
 end
 
-# Process the single top-of-queue vertex (one iteration of ComputeShortestPath's
-# inner body). Shared by the start-focused loop and the full-drain fallback.
+# One iteration of the ComputeShortestPath loop body {11''-28''}.
 function _process_top!(pl::DStarLitePlanner)
-    u, k_old = heap_top(pl.U)
-    k_new = calc_key(pl, u)
-
-    if _key_lt(k_old, k_new)
-        pl.U[u] = k_new
-    elseif pl.g[u...] > pl.rhs[u...]
-        # u becomes locally consistent (g lowered to rhs): only relax the
-        # predecessors whose rhs can actually improve through u's new g,
-        # instead of recomputing every neighbor's rhs from scratch.
-        pl.g[u...] = pl.rhs[u...]
-        heap_pop!(pl.U)
-        for s in _neighbors(pl, u)
-            if s != pl.goal
-                cand = delta_cost(pl.pf, s, u) + pl.g[u...]
-                cand < pl.rhs[s...] && (pl.rhs[s...] = cand)
+    u, k_old = heap_top(pl.U)                     # {11''} {12''}
+    k_new = calc_key(pl, u)                       # {13''}
+    if _key_lt(k_old, k_new)                      # {14''}
+        pl.U[u] = k_new                           # {15''}
+    elseif pl.g[u...] > pl.rhs[u...]              # {16''}
+        pl.g[u...] = pl.rhs[u...]                 # {17''}
+        delete!(pl.U, u)                          # {18''}
+        for s in _neighbors(pl, u)                # {19''} Pred(u)
+            if s != pl.goal                       # {20''}
+                pl.rhs[s...] = min(pl.rhs[s...], delta_cost(pl.pf, s, u) + pl.g[u...])
             end
-            sync_queue!(pl, s)
+            update_vertex!(pl, s)                 # {21''}
         end
     else
-        # u becomes (or stays) overconsistent/raised to Inf: u itself
-        # always needs a full rhs recompute (it may still be reachable
-        # via other neighbors), but predecessors only need one if their
-        # rhs was actually derived from u's old g; the rest are untouched.
-        g_old = pl.g[u...]
-        pl.g[u...] = Inf
-        heap_pop!(pl.U)
-        update_vertex!(pl, u)
-        for s in _neighbors(pl, u)
-            if pl.rhs[s...] == delta_cost(pl.pf, s, u) + g_old
-                update_vertex!(pl, s)
-            else
-                sync_queue!(pl, s)
+        g_old = pl.g[u...]                        # {23''}
+        pl.g[u...] = Inf                          # {24''}
+        for s in _neighbors(pl, u)                # {25''} Pred(u)
+            if pl.rhs[s...] == delta_cost(pl.pf, s, u) + g_old      # {26''}
+                s != pl.goal && (pl.rhs[s...] = _min_succ(pl, s))   # {27''}
             end
+            update_vertex!(pl, s)                 # {28''}
         end
+        # {25''} also includes s = u. There is no edge (u,u), so c(u,u) = ∞ and
+        # {26''} cannot hold: rhs(u) does not depend on g(u), only U changes.
+        update_vertex!(pl, u)                     # {28''}
     end
     return nothing
 end
 
+# ComputeShortestPath {10''-28''}. U.TopKey() of an empty queue is [∞; ∞], so
+# the loop also ends when U is empty (always the exit in full-field mode).
 function compute_shortest_path!(pl::DStarLitePlanner)
     while !isempty(pl.U)
-        if pl.s_start !== nothing
-            k_start = calc_key(pl, pl.s_start)
-            k_top = heap_top(pl.U)[2]
-            if !(_key_lt(k_top, k_start) || pl.rhs[pl.s_start...] != pl.g[pl.s_start...])
-                break
-            end
+        s = pl.s_start
+        if s !== nothing &&
+           !(_key_lt(heap_top(pl.U)[2], calc_key(pl, s)) || pl.rhs[s...] > pl.g[s...])  # {10''}
+            break
         end
-        _process_top!(pl)
-    end
-    return pl
-end
-
-"""
-    drain_queue!(planner)
-
-Fully process every vertex remaining in `planner.U`, ignoring the
-start-focused early exit — the same guarantee full-field mode already gets.
-
-D* Lite's focused termination only certifies `g(s_start)` itself; nodes that
-were on a since-invalidated path (e.g. after a cost *increase*) can be left
-locally "consistent" by stale cached values that were never revisited,
-because the cascade never reached them before the focused search stopped.
-`extract_path` uses this as a correctness fallback when it detects that
-walking the cached gradient has stalled.
-"""
-function drain_queue!(pl::DStarLitePlanner)
-    while !isempty(pl.U)
         _process_top!(pl)
     end
     return pl
@@ -291,17 +261,53 @@ end
 """
     update_start!(planner, new_start)
 
-Move the D* Lite search origin. Updates `km += h(s_last, new_start)` as in
-Koenig & Likhachev. Call `extract_path` or `compute_shortest_path!` afterwards.
+"Move to s_start" {34''-35''} of a focused planner: the agent steps to
+`new_start`, normally `argmin_{s'} c(s_start,s') + g(s')`. As in the paper,
+neither `km` nor `s_last` changes here; they are updated only when edge cost
+changes are detected ({37''-39''}, see [`update_after_cm_change!`](@ref)), and
+no replanning is needed while costs stay the same (Theorem 8).
 """
 function update_start!(pl::DStarLitePlanner, new_start::Tuple{Int,Int})
-    if pl.s_last !== nothing && new_start != pl.s_last
-        pl.km += heuristic_cost(pl, pl.s_last, new_start)
-    end
+    pl.s_start === nothing &&
+        throw(ArgumentError("update_start! needs a focused planner (init_planner with a start)"))
     pl.s_start = new_start
-    pl.s_last = new_start
     return pl
 end
+
+# The paper requires h(s,s') ≤ c*(s,s') and h(s,s'') ≤ h(s,s') + h(s',s'')
+# ("Heap Reordering", p. 480). All heuristic kinds are norms, so the triangle
+# inequality holds, and since every edge cost is at least its base-metric cost,
+# h ≤ c* follows from checking a single step in each neighborhood direction.
+function _check_heuristic(pl::DStarLitePlanner)
+    pl.heuristic_kind === :none && return nothing
+    pl.heuristic_kind in (:delta_cost, :manhattan, :euclidean) ||
+        throw(ArgumentError("unknown heuristic :$(pl.heuristic_kind)"))
+    base = _heuristic_metric(pl.pf.cost_metric)
+    u = pl.goal
+    for β in pl.pf.neighborhood
+        v = (u[1] + β[1], u[2] + β[2])
+        h, c = heuristic_cost(pl, u, v), delta_cost(pl.pf, base, u, v)
+        h <= c || throw(ArgumentError(
+            "heuristic :$(pl.heuristic_kind) is not admissible for " *
+            "$(pl.pf.cost_metric): h = $h > c = $c for the move $(β.I); " *
+            "D* Lite requires h(s,s') ≤ c*(s,s')"))
+    end
+    return nothing
+end
+
+_known_pmap(m::Union{PenaltyMap{2},AbsolutePenaltyMap{2}}) = copy(m.pmap)
+_known_pmap(::CostMetric) = nothing
+
+# Cost of edge (u,v) under the penalty values in `pmap` (same formula as delta_cost).
+_edge_cost(pf, m::PenaltyMap, pmap, u, v) =
+    delta_cost(pf, m.base_metric, u, v) + abs(pmap[u...] - pmap[v...])
+_edge_cost(pf, m::AbsolutePenaltyMap, pmap, u, v) =
+    delta_cost(pf, m.base_metric, u, v) + abs(pmap[u...]) + abs(pmap[v...])
+
+# c(u,v) as the planner last knew it (c_old in {41''}).
+@inline _known_cost(pl::DStarLitePlanner, u, v) =
+    pl.known_pmap === nothing ? delta_cost(pl.pf, u, v) :
+    _edge_cost(pl.pf, pl.pf.cost_metric, pl.known_pmap, u, v)
 
 function _make_planner(
     pf::DStarLite{2},
@@ -310,15 +316,16 @@ function _make_planner(
     heuristic::Symbol = :none,
 )
     sz = size(pf.walkmap)
-    g = fill(Inf, sz)
-    rhs = fill(Inf, sz)
-    rhs[goal...] = 0.0
-    U = CellHeap(sz)
     hk = start === nothing ? :none : heuristic
-    planner = DStarLitePlanner(pf, g, rhs, U, 0.0, goal, start, start, hk)
-    U[goal] = calc_key(planner, goal)
-    compute_shortest_path!(planner)
-    return planner
+    U = CellHeap(sz)                                                   # {02''}
+    pl = DStarLitePlanner(pf, fill(Inf, sz), fill(Inf, sz), U, 0.0,    # {03''} {04''}
+        goal, start, start, hk, _known_pmap(pf.cost_metric))           # {29''} s_last = s_start
+    _check_heuristic(pl)
+    pl.rhs[goal...] = 0.0                                              # {05''}
+    h_goal = start === nothing ? 0.0 : heuristic_cost(pl, start, goal)
+    U[goal] = (h_goal, 0.0)                                            # {06''}
+    compute_shortest_path!(pl)                                         # {31''}
+    return pl
 end
 
 """
@@ -329,13 +336,20 @@ end
 
 Build a D* Lite planner aimed at `goal`.
 
+This runs Initialize() and the first ComputeShortestPath() ({29''-31''}).
+
 With no `start`, the queue is emptied so `g` is a full cost-to-go field
 (Scenario 3 / many agents sharing an exit). With `start`, search is focused
 and `heuristic` is `h(start, s)`:
 
-- `:delta_cost` — `delta_cost(pf, start, s)`
-- `:manhattan` / `:euclidean` — grid distance from `start` to `s`
-- `:none` — `h = 0`
+- `:delta_cost`: base-metric distance (penalty maps only add non-negative
+  terms, so they are left out; with `MaxDistance` this is the heuristic of
+  the paper's experiments)
+- `:manhattan` / `:euclidean`: grid distance from `start` to `s`
+- `:none`: `h = 0`
+
+An `ArgumentError` is thrown if the heuristic is not admissible for the cost
+metric, e.g. `:manhattan` with diagonal moves under `MaxDistance`.
 """
 function init_planner(
     pf::DStarLite{2},
@@ -363,49 +377,82 @@ end
     update_after_cm_change!(planner, changed_cells)
     update_after_cm_change!(planner, changed_cells, new_start)
 
-Re-plan after cells in `changed_cells` had their cost change. If the caller
-already knows the agent's current position, pass it as `new_start` so the
-start move (`update_start!`) happens *before* replanning runs — otherwise a
-later `extract_path` call with a different start will trigger a second,
-redundant replanning pass.
+Handle edge-cost changes, lines {37''-48''} of the paper. The caller has already
+written the new penalties into the pathfinder's penalty map; `changed_cells`
+are the cells whose penalty changed. If the agent has moved since the last
+call ({35''}), pass its cell as `new_start`.
 
-This always fully settles the queue ([`drain_queue!`](@ref)) rather than
-stopping once `s_start` alone is consistent. A cost *increase* has to be
-cascaded outward through every cell it can affect before a subsequent
-`extract_path` can trust the cached `g` field along a multi-step path —
-stopping early (the cheaper start-focused criterion used for pure start
-movement) can leave cells "consistent" by bookkeeping but stale in fact,
-because the increase's cascade never reached them.
+1. `km += h(s_last, s_start)`, `s_last = s_start` {38''-39''} (focused only)
+2. for every directed edge (u,v) touching a changed cell whose cost changed
+   {40''}: take `c_old` from the planner's copy of the previous penalties
+   {41''}, adopt the new cost {42''}, and repair `rhs(u)` exactly as in
+   {43''-47''}
+3. ComputeShortestPath() {48''}
+
+Deviation from the paper: all edges adopt their new cost before the loop,
+because a cell's penalty moves all its incident edges at once. {43''-47''} stay
+correct, since every changed edge is still visited once with its own `c_old`.
 """
 function update_after_cm_change!(
-    planner::DStarLitePlanner,
+    pl::DStarLitePlanner,
     changed_cells::Vector{Tuple{Int,Int}},
     new_start::DStarStart = nothing,
 )
-    if planner.s_start !== nothing && new_start !== nothing
-        update_start!(planner, new_start)
+    if pl.s_start !== nothing
+        new_start !== nothing && (pl.s_start = new_start)          # {35''}
+        pl.km += heuristic_cost(pl, pl.s_last, pl.s_start)         # {38''}
+        pl.s_last = pl.s_start                                     # {39''}
     end
-    for u in changed_cells
-        update_vertex!(planner, u)
-        for v in _neighbors(planner, u)
-            update_vertex!(planner, v)
+
+    # {40''-41''}: directed edges incident to changed cells, with c_old
+    wm = pl.pf.walkmap
+    seen = Set{NTuple{2,Tuple{Int,Int}}}()
+    edges = Tuple{Tuple{Int,Int},Tuple{Int,Int},Float64}[]
+    for x in changed_cells
+        wm[x...] || continue                  # a blocked cell has no edges
+        for n in _neighbors(pl, x), e in ((x, n), (n, x))
+            e in seen && continue
+            push!(seen, e)
+            push!(edges, (e[1], e[2], _known_cost(pl, e[1], e[2])))
         end
     end
-    drain_queue!(planner)
-    return planner
+
+    # {42''}: adopt the new costs
+    if pl.known_pmap !== nothing
+        live = pl.pf.cost_metric.pmap
+        for x in changed_cells
+            pl.known_pmap[x...] = live[x...]
+        end
+    end
+
+    for (u, v, c_old) in edges
+        c_new = delta_cost(pl.pf, u, v)
+        c_old == c_new && continue            # {40''} only changed edges
+        if c_old > c_new                                                   # {43''}
+            u != pl.goal && (pl.rhs[u...] = min(pl.rhs[u...], c_new + pl.g[v...]))  # {44''}
+        elseif pl.rhs[u...] == c_old + pl.g[v...]                          # {45''}
+            u != pl.goal && (pl.rhs[u...] = _min_succ(pl, u))              # {46''}
+        end
+        update_vertex!(pl, u)                                              # {47''}
+    end
+
+    compute_shortest_path!(pl)                                             # {48''}
+    return pl
 end
 
 """
     extract_path(planner, start; max_steps = 10_000)
 
-Greedily walk the cached `g` field from `start` to `planner.goal`.
+Walk from `start` to `planner.goal`, always moving to a successor `s'` that
+minimizes `c(s,s') + g(s')` ({34''}). Theorem 8 guarantees this is a shortest
+path from the `s_start` that ComputeShortestPath() last ran for, and from any
+cell on that path.
 
-Focused D* Lite only guarantees `g(start)` itself once `compute_shortest_path!`
-returns — cells further along a path that was invalidated by a recent cost
-*increase* can still hold stale cached values if the update cascade never
-reached them. If the greedy walk detects that (by trying to revisit an
-already-visited cell), it falls back to [`drain_queue!`](@ref) once to bring
-every touched cell to full consistency, then resumes.
+For a focused planner, a different `start` means the agent was relocated to a
+cell that might not be on that path. The planner then runs
+{38''-39''} and {48''} with no changed edges, i.e. what the paper's main loop
+does on its next scan. For moves along the path, call
+[`update_start!`](@ref) and then `extract_path(planner, planner.s_start)`.
 """
 function extract_path(
     planner::DStarLitePlanner,
@@ -413,19 +460,14 @@ function extract_path(
     max_steps = 10_000,
 )
     if planner.s_start !== nothing && start != planner.s_start
-        update_start!(planner, start)
-        compute_shortest_path!(planner)
+        planner.s_start = start
+        update_after_cm_change!(planner, Tuple{Int,Int}[])
     end
 
-    path = Tuple{Int,Int}[]
+    path = Tuple{Int,Int}[start]
     cur = start
-    push!(path, cur)
-    visited = Set{Tuple{Int,Int}}((cur,))
-    drained = false
-
     for _ in 1:max_steps
         cur == planner.goal && break
-
         best = nothing
         best_val = Inf
         for n in _neighbors(planner, cur)
@@ -435,19 +477,9 @@ function extract_path(
                 best = n
             end
         end
-
-        if best !== nothing && best in visited && !drained
-            drain_queue!(planner)
-            drained = true
-            continue
-        end
-
-        best === nothing && break
-
-        push!(visited, best)
+        best === nothing && break             # {33''}: no known path
         cur = best
         push!(path, cur)
     end
-
     return path
 end

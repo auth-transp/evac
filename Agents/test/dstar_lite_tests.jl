@@ -38,22 +38,34 @@ end
         focused = init_planner(pf, (8, 8), (1, 1); heuristic = :manhattan)
         @test focused.s_start == (1, 1)
         @test focused.heuristic_kind === :manhattan
-        @test focused.g[1, 1] ≈ full.g[1, 1]
-        @test focused.rhs[1, 1] ≈ focused.g[1, 1]
+        # {10''} may stop with s_start overconsistent, so rhs(s_start) (not
+        # g) holds its goal distance (paper, "Optimizations")
+        @test focused.rhs[1, 1] ≈ full.g[1, 1]
         path = extract_path(focused, (1, 1))
         @test path[end] == (8, 8)
-        @test _travel_cost(pf, path) ≈ focused.g[1, 1]
+        @test _travel_cost(pf, path) ≈ full.g[1, 1]
     end
 
-    @testset "km updates when start moves" begin
+    @testset "km changes only when edge costs change ({37''-39''})" begin
         pl = init_planner(pf, (8, 8), (1, 1); heuristic = :manhattan)
         @test pl.km == 0.0
         update_start!(pl, (2, 1))
         @test pl.s_start == (2, 1)
-        @test pl.km ≈ 1.0
-        Pathfinding.compute_shortest_path!(pl)
-        @test pl.g[2, 1] < Inf
+        @test pl.km == 0.0            # moving alone never touches km
+        @test pl.s_last == (1, 1)
         @test extract_path(pl, (2, 1))[end] == (8, 8)
+        update_after_cm_change!(pl, Tuple{Int,Int}[])
+        @test pl.km ≈ 1.0             # h(s_last, s_start)
+        @test pl.s_last == (2, 1)
+        @test_throws ArgumentError update_start!(init_planner(pf, (8, 8)), (2, 1))
+    end
+
+    @testset "inadmissible heuristics are rejected" begin
+        pf_max = DStarLite(space; cost_metric = MaxDistance{2}())
+        # a diagonal step costs 1 but Manhattan / Euclidean estimate 2 / √2
+        @test_throws ArgumentError init_planner(pf_max, (8, 8), (1, 1); heuristic = :manhattan)
+        @test_throws ArgumentError init_planner(pf_max, (8, 8), (1, 1); heuristic = :euclidean)
+        @test init_planner(pf_max, (8, 8), (1, 1); heuristic = :delta_cost).rhs[1, 1] ≈ 7
     end
 
     @testset "cost-map change replans" begin
@@ -89,22 +101,18 @@ end
         # (1,1) -> (8,8) is 14 steps direct but 2 steps via wraparound in each dim
         for hk in (:manhattan, :euclidean)
             pl = init_planner(pf_periodic, (8, 8), (1, 1); heuristic = hk)
-            @test pl.g[1, 1] ≈ 2.0
+            @test pl.rhs[1, 1] ≈ 2.0   # g(s_start) may stay ∞ under {10''}
             path = extract_path(pl, (1, 1))
             @test path[end] == (8, 8)
             @test _travel_cost(pf_periodic, path) ≈ 2.0
         end
     end
 
-    @testset "cost increase invalidates a cached focused path (2-arg form)" begin
-        # Regression test: a cost increase on a cell that lies on the agent's
-        # already-cached diagonal route must not leave stale g/rhs values on
-        # cells the greedy walk in extract_path depends on, even when the
-        # caller doesn't pass `new_start` to update_after_cm_change!.
+    @testset "cost increase on the cached focused path" begin
         pmap = zeros(Int, 8, 8)
         pf_pen = DStarLite(space; cost_metric = AbsolutePenaltyMap(pmap, MaxDistance{2}()))
-        pl = init_planner(pf_pen, (8, 8), (1, 1); heuristic = :manhattan)
-        extract_path(pl, (1, 1))
+        pl = init_planner(pf_pen, (8, 8), (1, 1))
+        @test (4, 4) in extract_path(pl, (1, 1))
 
         pmap[4, 4] = 80
         update_after_cm_change!(pl, [(4, 4)])
@@ -113,26 +121,109 @@ end
         @test path[end] == (8, 8)
         @test (4, 4) ∉ path
         @test allunique(path)
-        @test _travel_cost(pf_pen, path) ≈ pl.g[1, 1]
+        @test _travel_cost(pf_pen, path) ≈ init_planner(pf_pen, (8, 8)).g[1, 1]
     end
 
-    @testset "update_after_cm_change! with new_start avoids stale-start replan" begin
+    @testset "update_after_cm_change! with new_start" begin
         pmap = zeros(Int, 8, 8)
         pf_pen = DStarLite(space; cost_metric = AbsolutePenaltyMap(pmap, MaxDistance{2}()))
-        pl = init_planner(pf_pen, (8, 8), (1, 1); heuristic = :manhattan)
+        pl = init_planner(pf_pen, (8, 8), (1, 1))
         extract_path(pl, (1, 1))
 
         pmap[4, 4] = 80
-        new_start = (2, 1)
+        new_start = (2, 2)
         update_after_cm_change!(pl, [(4, 4)], new_start)
-        # start (and km) should already be updated by update_after_cm_change!
         @test pl.s_start == new_start
+        @test pl.s_last == new_start
+        @test pl.km ≈ 1.0             # Chebyshev h((1,1), (2,2))
 
         path = extract_path(pl, new_start)
         @test path[1] == new_start
         @test path[end] == (8, 8)
         @test (4, 4) ∉ path
-        @test _travel_cost(pf_pen, path) ≈ pl.g[new_start...]
+        @test _travel_cost(pf_pen, path) ≈ init_planner(pf_pen, (8, 8)).g[new_start...]
+    end
+
+    @testset "Theorem 8: incremental replanning matches a fresh search" begin
+        # The agent follows its path while random penalty changes happen; after
+        # each step the greedy path must cost exactly the goal distance
+        # computed from scratch on the current costs.
+        rng = Xoshiro(2002)
+        n = 12
+        sp = GridSpace((n, n); periodic = false)
+        goal = (n, n)
+        for trial in 1:40
+            walk = rand(rng, n, n) .> 0.25
+            walk[1, 1] = walk[goal...] = true
+            pmap = rand(rng, 0:5, n, n)
+            base = isodd(trial) ? MaxDistance{2}() : DirectDistance{2}()
+            pf_r = DStarLite(sp; walkmap = walk, cost_metric = AbsolutePenaltyMap(pmap, base))
+            pl = init_planner(pf_r, goal, (1, 1))
+            s = (1, 1)
+            for step in 1:60
+                d = init_planner(pf_r, goal).g[s...]
+                path = extract_path(pl, s)
+                if d == Inf
+                    @test path == [s]
+                    break
+                end
+                @test path[end] == goal
+                @test allunique(path)
+                @test _travel_cost(pf_r, path) ≈ d
+                s == goal && break
+                s = path[2]
+                changed = unique([(rand(rng, 1:n), rand(rng, 1:n)) for _ in 1:4])
+                for c in changed
+                    pmap[c...] = rand(rng, 0:30)
+                end
+                if isodd(step)
+                    update_start!(pl, s)
+                    update_after_cm_change!(pl, changed)
+                else
+                    update_after_cm_change!(pl, changed, s)
+                end
+            end
+        end
+    end
+
+    @testset "full-field incremental updates match a fresh search (Scenario 3)" begin
+        rng = Xoshiro(480)
+        n = 12
+        for _ in 1:20
+            walk = rand(rng, n, n) .> 0.25
+            walk[n, n] = true
+            pmap = rand(rng, 0:5, n, n)
+            pf_r = DStarLite(GridSpace((n, n); periodic = false);
+                walkmap = walk, cost_metric = AbsolutePenaltyMap(pmap, MaxDistance{2}()))
+            pl = init_planner(pf_r, (n, n))
+            for _ in 1:15
+                changed = unique([(rand(rng, 1:n), rand(rng, 1:n)) for _ in 1:6])
+                for c in changed
+                    pmap[c...] = rand(rng, 0:40)
+                end
+                update_after_cm_change!(pl, changed)
+                @test pl.g == init_planner(pf_r, (n, n)).g
+                @test isempty(pl.U)
+            end
+        end
+    end
+
+    @testset "find_path is optimal" begin
+        rng = Xoshiro(476)
+        for _ in 1:20
+            walk = rand(rng, 10, 10) .> 0.25
+            walk[1, 1] = walk[10, 10] = true
+            pmap = rand(rng, 0:9, 10, 10)
+            pf_r = DStarLite(GridSpace((10, 10); periodic = false);
+                walkmap = walk, cost_metric = AbsolutePenaltyMap(pmap, MaxDistance{2}()))
+            d = init_planner(pf_r, (10, 10)).g[1, 1]
+            p = find_path(pf_r, (1, 1), (10, 10))
+            if d == Inf
+                @test isnothing(p)
+            else
+                @test _travel_cost(pf_r, [(1, 1); collect(p)]) ≈ d
+            end
+        end
     end
 
     @testset "CellHeap keeps min-order under insert / key change / delete" begin

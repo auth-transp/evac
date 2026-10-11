@@ -101,10 +101,20 @@ get_periodic_type(::DStarLite{D,P,M}) where {D,P,M} = "mixed periodicity, "
 
 # ---------------- D* Lite core: find_path ----------------
 
+# Metric used for the heuristic h(s,s'). Penalty maps only add non-negative
+# terms to edge costs, so their base metric satisfies h(s,s') ≤ c*(s,s') and
+# the triangle inequality (Koenig & Likhachev 2002, p. 480) with h(s,s) = 0.
+_heuristic_metric(m::CostMetric) = m
+_heuristic_metric(m::PenaltyMap) = m.base_metric
+_heuristic_metric(m::AbsolutePenaltyMap) = m.base_metric
+
 """
     find_path(pathfinder::DStarLite{D}, from::Dims{D}, to::Dims{D})
 
-Υπολογίζει διαδρομή `from → to` με τον αλγόριθμο D* Lite.
+Υπολογίζει διαδρομή `from → to` με τον αλγόριθμο D* Lite (optimized version,
+Figure 4 του paper): Initialize() + ComputeShortestPath() και μετά greedy
+`argmin c(s,s') + g(s')` (Theorem 8). Είναι one-shot, χωρίς το main loop
+{32''-48''}; για επαναληπτικό σχεδιασμό βλ. [`init_planner`](@ref).
 Επιστρέφει `Path{D,Int}` ή `nothing` αν δεν υπάρχει διαδρομή.
 """
 function find_path(pathfinder::DStarLite{D}, from::Dims{D}, to::Dims{D}) where {D}
@@ -131,103 +141,70 @@ function find_path(pathfinder::DStarLite{D}, from::Dims{D}, to::Dims{D}) where {
     setg!(s, v)   = (g[s]   = v)
     setrhs!(s, v) = (rhs[s] = v)
 
-    h(s) = delta_cost(pathfinder, s, s_start)  # heuristic μέχρι το start
+    hmetric = _heuristic_metric(pathfinder.cost_metric)
+    h(s) = Float64(delta_cost(pathfinder, hmetric, s_start, s))   # h(s_start, s)
 
-    function calc_key(s)
-        gs  = getg(s)
-        rs  = getrhs(s)
-        m   = min(gs, rs)
+    function calc_key(s)                                          # {01''}
+        m = min(getg(s), getrhs(s))
         return (m + h(s) + km, m)
     end
 
     key_lt(a::Tuple{T,T}, b::Tuple{T,T}) where {T<:Real} =
         (a[1] < b[1]) || (a[1] == b[1] && a[2] < b[2])
 
-    function update_vertex!(u)
-        # rhs(u) = min_{s' in Succ(u)} (c(u,s') + g(s'))   για u ≠ goal
-        if u != s_goal
-            min_rhs = Inf
-            for sp in walkable_neighbors(u, pathfinder)  # Succ(u)
-                val = delta_cost(pathfinder, u, sp) + getg(sp)
-                if val < min_rhs
-                    min_rhs = val
-                end
-            end
-            setrhs!(u, min_rhs)
+    function min_succ(u)                  # min_{s' ∈ Succ(u)} (c(u,s') + g(s'))
+        m = Inf
+        for sp in walkable_neighbors(u, pathfinder)
+            m = min(m, delta_cost(pathfinder, u, sp) + getg(sp))
         end
+        return m
+    end
 
-        # Remove u from queue if present, then reinsert if inconsistent
-        if haskey(U, u)
-            delete!(U, u)
-        end
+    function update_vertex!(u)                                    # {07''-09''}
         if getg(u) != getrhs(u)
-            U[u] = calc_key(u)
+            U[u] = calc_key(u)                                    # U.Update / U.Insert
+        elseif haskey(U, u)
+            delete!(U, u)                                         # U.Remove
         end
         return nothing
     end
 
-    # initialization
+    # Initialize() {02''-06''}
     setrhs!(s_goal, 0.0)
-    U[s_goal] = calc_key(s_goal)
+    U[s_goal] = (h(s_goal), 0.0)
 
-    function top_key()
-        if isempty(U)
-            return (Inf, Inf), nothing
+    # ComputeShortestPath() {10''-28''}; an empty U has TopKey [∞; ∞]
+    while !isempty(U)
+        u, k_old = peek(U)                                        # {11''} {12''}
+        key_lt(k_old, calc_key(s_start)) || getrhs(s_start) > getg(s_start) || break  # {10''}
+        k_new = calc_key(u)                                       # {13''}
+        if key_lt(k_old, k_new)                                   # {14''}
+            U[u] = k_new                                          # {15''}
+        elseif getg(u) > getrhs(u)                                # {16''}
+            setg!(u, getrhs(u))                                   # {17''}
+            delete!(U, u)                                         # {18''}
+            for s in walkable_neighbors(u, pathfinder)            # {19''} Pred(u)
+                s != s_goal &&                                    # {20''}
+                    setrhs!(s, min(getrhs(s), delta_cost(pathfinder, s, u) + getg(u)))
+                update_vertex!(s)                                 # {21''}
+            end
         else
-            pair = peek(U)              # Pair{Dims{D}, Tuple{Float64,Float64}}
-            u    = pair.first           # το key = θέση
-            k    = pair.second          # η προτεραιότητα (k1,k2)
-            return k, u
+            g_old = getg(u)                                       # {23''}
+            setg!(u, Inf)                                         # {24''}
+            for s in walkable_neighbors(u, pathfinder)            # {25''} Pred(u)
+                if getrhs(s) == delta_cost(pathfinder, s, u) + g_old   # {26''}
+                    s != s_goal && setrhs!(s, min_succ(s))        # {27''}
+                end
+                update_vertex!(s)                                 # {28''}
+            end
+            update_vertex!(u)   # s = u in {25''}: no edge (u,u), so {26''} fails
         end
     end
 
-    function compute_shortest_path!()
-        while true
-            k_start = calc_key(s_start)
-            (k_top, u) = top_key()
-            u === nothing && break
-
-            # while (U.TopKey < CalculateKey(s_start)) OR (rhs(s_start) != g(s_start))
-            if !(key_lt(k_top, k_start) || getrhs(s_start) != getg(s_start))
-                break
-            end
-
-            pair  = peek(U)
-            u     = pair.first
-            k_old = pair.second
-            dequeue!(U)
-
-            k_new = calc_key(u)
-
-            if key_lt(k_old, k_new)
-                # U.Insert(u, CalculateKey(u))
-                U[u] = k_new
-
-            elseif getg(u) > getrhs(u)
-                # g(u) = rhs(u)
-                setg!(u, getrhs(u))
-
-                # for all s in Pred(u): UpdateVertex(s)
-                for s in walkable_neighbors(u, pathfinder)   # Pred(u)
-                    update_vertex!(s)
-                end
-
-            else
-                # g(u) = ∞
-                setg!(u, Inf)
-
-                # UpdateVertex(u); for all s in Pred(u): UpdateVertex(s)
-                update_vertex!(u)
-                for s in walkable_neighbors(u, pathfinder)   # Pred(u)
-                    update_vertex!(s)
-                end
-            end
-        end
-    end
-
-    compute_shortest_path!()
-
-    if getg(s_start) == Inf
+    # {33''}. The optimized termination may leave s_start overconsistent with
+    # g(s_start) = ∞ although a path exists (p. 481), so test rhs(s_start),
+    # which is exactly the value the greedy walk below minimizes.
+    if getrhs(s_start) == Inf
         return
     end
 
