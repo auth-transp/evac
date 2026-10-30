@@ -1,3 +1,11 @@
+# ΣΧΕΣΗ ΜΕ ΤΟ PAPER (Koenig & Likhachev, AAAI 2002)
+# Το αρχείο αυτό ΔΕΝ περιέχει αλγόριθμο του D* Lite. Είναι ο προσαρμογέας για το ContinuousSpace του
+# Agents.jl: μετατρέπει τις συνεχείς θέσεις σε cells του grid, καλεί την `find_path` (που υλοποιεί το
+# Figure 4 στο dstar_lite.jl) και μετατρέπει το αποτέλεσμα πάλι σε συνεχείς συντεταγμένες.
+# Η κίνηση κατά μήκος της διαδρομής (`move_along_route!`) αντιστοιχεί στο «Move to s_start» {35''}
+# του paper, αλλά γίνεται σε συνεχή χώρο με ταχύτητα και dt.
+
+# τετραγωνική απόσταση δύο θέσεων (με wrap-around αν ο χώρος είναι περιοδικός), για τον έλεγχο των τελευταίων waypoints
 sqr_distance(from, to, pathfinder::DStarLite{D,true}) where {D} =
     sum(min.(abs.(from .- to), pathfinder.dims .- abs.(from .- to)) .^ 2)
 sqr_distance(from, to, pathfinder::DStarLite{D,false}) where {D} =
@@ -22,9 +30,9 @@ function find_continuous_path(
     from::Any,
     to::Any,
 ) where {D}
-    discrete_from = Tuple(to_discrete_position(from, pathfinder))
+    discrete_from = Tuple(to_discrete_position(from, pathfinder))    # συνεχής θέση → cell του grid
     discrete_to = Tuple(to_discrete_position(to, pathfinder))
-    discrete_path = find_path(pathfinder, discrete_from, discrete_to)
+    discrete_path = find_path(pathfinder, discrete_from, discrete_to)   # εδώ τρέχει το D* Lite (Figure 4, one-shot)
     # find_path returns nothing if no path exists
     isnothing(discrete_path) && return
     # if discrete_path is empty, `from` and `to` are in the same grid cell,
@@ -33,7 +41,7 @@ function find_continuous_path(
 
     cts_path = Path{D,Float64}()
     for pos in discrete_path
-        push!(cts_path, to_continuous_position(pos, pathfinder))
+        push!(cts_path, to_continuous_position(pos, pathfinder))     # cell → συνεχής θέση (κέντρο του cell)
     end
 
     # Handles an edge case to prevent backtracking for a fraction of a grid cell
@@ -107,6 +115,8 @@ function Agents.move_along_route!(
     speed::Float64,
     dt::Real = 1.0,
 ) where {D}
+    # Κίνηση του agent κατά speed*dt κατά μήκος της αποθηκευμένης διαδρομής (≈ «Move to s_start» {35''} του paper,
+    # αλλά σε συνεχή χώρο)· περνά από όσα waypoints προλαβαίνει μέσα στο βήμα.
     isempty(Agents.getid(agent), pathfinder) && return
     from = agent.pos
     next_pos = agent.pos

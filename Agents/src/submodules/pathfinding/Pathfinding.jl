@@ -43,6 +43,8 @@ include("dstar_lite.jl")
 include("dstar_lite_planner.jl")
 include("dstar_lite_grid.jl")
 include("dstar_lite_continuous.jl")
+include("social_force.jl")
+include("social_force_continuous.jl")
 
 export CostMetric,
     DirectDistance,
@@ -65,7 +67,13 @@ export CostMetric,
     init_planner,
     update_after_cm_change!,
     extract_path,
-    update_start!
+    update_start!,
+    SocialForce,
+    social_force,
+    social_force_step!,
+    desired_direction,
+    set_pedestrian!,
+    borders_from_walkmap
 
 # Deprecations
 @deprecate set_target! plan_route!

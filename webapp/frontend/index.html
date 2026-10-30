@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Service</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Live Service</h1>
+  <span class="sub">Δημιουργία heightmap εκκένωσης από δορυφορική εικόνα</span>
+  <div class="spacer"></div>
+  <div class="viewtoggle" id="viewToggle">
+    <button data-view="image" class="active">Εικόνα</button>
+    <button data-view="labels">Κλάσεις</button>
+    <button data-view="heightmap">Heightmap</button>
+  </div>
+</header>
+
+<main>
+<aside id="steps">
+
+  <section class="step active" data-step="image">
+    <h2><span class="n">1</span> Εικόνα</h2>
+    <div class="body">
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="image/png,image/jpeg,image/bmp,image/tiff">
+        <span>Επίλεξε ή σύρε εδώ μια δορυφορική εικόνα (png, jpg, bmp)</span>
+      </label>
+      <p class="info" id="imageInfo"></p>
+    </div>
+  </section>
+
+  <section class="step" data-step="scale">
+    <h2><span class="n">2</span> Κλίμακα</h2>
+    <div class="body">
+      <p class="hint">Όρισε ένα από τα δύο:</p>
+      <label class="radio"><input type="radio" name="scaleMode" value="line" checked> Γραμμή αναφοράς γνωστού μήκους</label>
+      <div class="sub-body" id="scaleLine">
+        <p class="hint">Τράβηξε γραμμή πάνω σε κάτι γνωστού μήκους (πλάτος δρόμου, διάμετρο δεξαμενής) και γράψε τα μέτρα.</p>
+        <button id="drawRef">Σχεδίαση γραμμής</button>
+        <label class="field">Μήκος (m) <input type="number" id="refMeters" min="0.1" step="any" value="100"></label>
+      </div>
+      <label class="radio"><input type="radio" name="scaleMode" value="geo"> Γεωγραφικό πλάτος και zoom</label>
+      <div class="sub-body hidden" id="scaleGeo">
+        <p class="hint">Για screenshot χάρτη (Google, Bing) στο αρχικό μέγεθος, 256 px ανά tile: m/pixel = 156543.03·cos(lat)/2^zoom.</p>
+        <label class="field">Γεωγραφικό πλάτος (°) <input type="number" id="geoLat" step="any" value="25.9"></label>
+        <label class="field">Zoom <input type="number" id="geoZoom" step="any" value="17"></label>
+      </div>
+      <p class="info" id="scaleInfo">Η κλίμακα δεν έχει οριστεί.</p>
+    </div>
+  </section>
+
+  <section class="step" data-step="region">
+    <h2><span class="n">3</span> Περιοχή εγκατάστασης</h2>
+    <div class="body">
+      <p class="hint">Κλικ για κορυφές· διπλό κλικ, Enter ή κλικ στην πρώτη κορυφή για κλείσιμο. Backspace αναιρεί κορυφή, Esc ακυρώνει.</p>
+      <div class="seg" id="regionMode">
+        <button data-mode="add" class="active">Προσθήκη</button>
+        <button data-mode="subtract">Αφαίρεση (οπή)</button>
+      </div>
+      <ul class="list" id="regionList"></ul>
+    </div>
+  </section>
+
+  <section class="step" data-step="analyze">
+    <h2><span class="n">4</span> Κτίρια, δρόμοι, διόρθωση</h2>
+    <div class="body">
+      <label class="field">Ανάλυση grid (m/pixel) <input type="number" id="targetMpp" min="0.5" step="0.1" value="3.46"></label>
+      <label class="field">Ευαισθησία <input type="range" id="sensitivity" min="4" max="40" value="14"><output id="sensitivityOut">14</output></label>
+      <label class="field">Ελάχ. πλάτος κτιρίου (m) <input type="number" id="minBuilding" min="2" step="1" value="8"></label>
+      <div class="row">
+        <button id="pickGround" title="Κλικ σε σημείο ανοιχτού εδάφους">Δείγμα εδάφους</button>
+        <button id="propose" class="primary">Αυτόματη πρόταση</button>
+      </div>
+      <p class="info" id="proposeInfo"></p>
+      <h3>Διόρθωση</h3>
+      <div class="palette" id="palette">
+        <button data-class="1" class="active"><i style="background:#c9b98a"></i>Έδαφος</button>
+        <button data-class="2"><i style="background:#ffffff"></i>Δρόμος</button>
+        <button data-class="3"><i style="background:#e9902a"></i>Κτίριο</button>
+        <button data-class="4"><i style="background:#262626"></i>Τοίχος</button>
+        <button data-class="0"><i style="background:#7a7a7a"></i>Εκτός</button>
+      </div>
+      <label class="field">Μέγεθος πινέλου <input type="range" id="brushSize" min="1" max="20" value="3"><output id="brushOut">3</output></label>
+      <div class="row">
+        <button id="brushTool">Πινέλο</button>
+        <button id="undoLabels">Αναίρεση</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="step" data-step="exits">
+    <h2><span class="n">5</span> Έξοδοι</h2>
+    <div class="body">
+      <p class="hint">Σύρε ένα τμήμα στη θέση της εξόδου (π.χ. πάνω στον τοίχο/περίφραξη). Σχηματίζεται ορθογώνιο παραλληλόγραμμο: μήκος το τμήμα, πάχος όπως παρακάτω. Ανοίγει βατό πέρασμα και η έξοδος γίνεται προορισμός.</p>
+      <label class="field">Πάχος (m) <input type="number" id="exitThickness" min="1" step="1" value="8"></label>
+      <button id="exitTool">Σχεδίαση εξόδου</button>
+      <ul class="list" id="exitList"></ul>
+    </div>
+  </section>
+
+  <section class="step" data-step="spawn">
+    <h2><span class="n">6</span> Agents</h2>
+    <div class="body">
+      <label class="field">Πλήθος agents <input type="number" id="nAgents" min="1" step="1" value="100"></label>
+      <p class="hint">Ζώνες spawn: κλικ για κορυφές πολυγώνου, διπλό κλικ ή Enter για κλείσιμο. Μπορείς να ορίσεις πολλές ζώνες.</p>
+      <button id="spawnTool">Σχεδίαση ζώνης</button>
+      <ul class="list" id="spawnList"></ul>
+    </div>
+  </section>
+
+  <section class="step" data-step="build">
+    <h2><span class="n">7</span> Heightmap</h2>
+    <div class="body">
+      <button id="build" class="primary">Δημιουργία heightmap</button>
+      <div class="info" id="buildInfo"></div>
+      <ul class="warn" id="warnList"></ul>
+      <div class="row hidden" id="downloads">
+        <a id="dlHeightmap" download="heightmap.png">heightmap.png</a>
+        <a id="dlSpawn" download="spawn_mask.png">spawn_mask.png</a>
+        <a id="dlConfig" download="config.json">config.json</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="step" data-step="sim">
+    <h2><span class="n">8</span> Προσομοίωση</h2>
+    <div class="body">
+      <p class="hint">Τρέχει το DStarLite - Scenario 3 (D* Lite + Social Force Model + τοξικό φορτίο) σε ξεχωριστή διεργασία Julia, πάνω στο heightmap που δημιούργησες.</p>
+      <label class="field">Διάρκεια (s) <input type="number" id="simT" min="10" max="20000" step="10" value="2500"></label>
+      <label class="field">Seed <input type="number" id="simSeed" step="1" value="123"></label>
+      <p class="hint">Τα 7 concentration maps είναι του Qatargas και τεντώνονται ώστε να καλύπτουν την περιοχή σου. Είναι προσωρινή λύση μέχρι να οριστεί το μοντέλο διασποράς.</p>
+      <div class="row">
+        <button id="simRun" class="primary">Εκτέλεση</button>
+        <button id="simCancel" class="hidden">Ακύρωση</button>
+      </div>
+      <progress id="simProgress" class="hidden" max="1" value="0"></progress>
+      <p class="info" id="simInfo"></p>
+      <label class="radio check"><input type="checkbox" id="showCm" checked> Εμφάνιση concentration map</label>
+      <h3>Διαφυγή και ακινητοποίηση</h3>
+      <canvas id="chartEsc" class="chart"></canvas>
+      <h3>Κατανομή τοξικού φορτίου (τρέχον frame)</h3>
+      <canvas id="chartTL" class="chart"></canvas>
+      <div class="row hidden" id="simDownloads">
+        <a id="dlCsv" download="trajectories.csv">trajectories.csv</a>
+        <a id="dlResult" download="result.json">result.json</a>
+      </div>
+    </div>
+  </section>
+</aside>
+
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="hud"></div>
+  <div id="simbar" class="hidden">
+    <button id="simPlay" title="Αναπαραγωγή / παύση">▶</button>
+    <input type="range" id="simSlider" min="0" max="0" value="0">
+    <select id="simSpeed" title="Ταχύτητα">
+      <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option>
+    </select>
+    <span id="simTime"></span>
+  </div>
+  <div class="legend">Τροχός: zoom · Δεξί ή μεσαίο κουμπί/Space: μετακίνηση</div>
+</div>
+</main>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -37,8 +37,8 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
 end
 
 
-begin   # Φόρτωση του heightmap και των hand-drawn penalty maps (και όλων των CM1..CM7)
-    # heightmap (unchanged)
+begin   # Φόρτωση του heightmap και των concentration maps CM1..CM7 (το τρέχον CM λειτουργεί ως penalty_map)
+    # heightmap
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")                              # φόρτωση της εικόνας του χάρτη
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]          # μετατροπή σε πίνακα (γραμμές, στήλες) και κράτημα του 1ου καναλιού
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)            # κλιμάκωση σε ακέραιες τιμές 0..255
@@ -73,14 +73,13 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0                            # συντελεστής μετατροπής μέτρων σε pixels του χάρτη
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
-    n_agents = 100                                                        # Define the n_agents variable as 3
-    toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
+    n_agents = 100                                                        # Define the n_agents variable as 100
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
-    ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as a larger range of values from the heightmap array # [1] stands for the 1st row
-    ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as a range of values from the heightmap array # [2] stands for the 2nd row
-    dims = (size(NPM))                                            # Define the dims variable as the dimensions of the heightmap array (2xn matrix)
+    ag_range_y = (size(heightmap)[1]/4):(3*size(heightmap)[1]/4)    # Define the ag_range_y variable as the central range (1/4 to 3/4 of the size) of the heightmap's 1st dimension # [1] stands for the 1st dimension (rows)
+    ag_range_x = (size(heightmap)[2]/4):(3*size(heightmap)[2]/4)    # Define the ag_range_x variable as the central range (1/4 to 3/4 of the size) of the heightmap's 2nd dimension # [2] stands for the 2nd dimension (columns)
+    dims = (size(NPM))                                            # Define the dims variable as the dimensions (rows, columns) of the NPM array, the same as the heightmap
     walkmap = BitArray(trues(dims...))                                 # Define the walkmap variable as a BitArray of true values with the dimensions of the heightmap array
     
     # Set walkmap to false in white areas of the heightmap (after reversal, white = high values)
@@ -112,6 +111,30 @@ begin   # Ορισμός του pathfinder D* Lite και των ιδιοτήτ�
     heuristic_code  = "DF"   # DF: default Agents.jl heuristic, EY: Euclidean, MN: Manhattan
     # D* Lite pathfinder: οι agents δεν περνούν από μη βατά cells (walkmap) και ακολουθούν το cost_metric
     pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = cost_metric_obj)
+
+    # --- Social Force Model (Helbing & Molnár, Phys. Rev. E 51, 4282 (1995)) ---
+    # USE_SFM = true: η κίνηση γίνεται με το SFM (Pathfinding.SocialForce) αντί για την ευθύγραμμη κίνηση κατά μήκος του path
+    # και τις ελαστικές συγκρούσεις. Ο D* Lite δίνει ΜΟΝΟ την επιθυμητή κατεύθυνση (προς το επόμενο waypoint του a.path)·
+    # οι δυνάμεις (επιτάχυνση, άπωση από άλλους πεζούς και από τοίχους) καθορίζουν την πραγματική κίνηση.
+    # USE_SFM = false: η αρχική κίνηση (move_along_precomputed_path! + elastic_collision!).
+    USE_SFM = true
+    SFM_SUBSTEPS = 20               # υπο-βήματα του SFM ανά βήμα του μοντέλου (dt_sfm = dt/20 = 0.05 s· πρέπει να είναι << τ = 0.5 s)
+    SFM_WAYPOINT_RADIUS = 0.5       # (pixels) απόσταση στην οποία ένα waypoint του path θεωρείται ότι επιτεύχθηκε
+    # Οι παράμετροι του paper είναι σε μέτρα/δευτερόλεπτα· ο χώρος του μοντέλου είναι σε pixels (1 m = METERS_TO_PIXELS px),
+    # άρα μήκη × MPX, επιταχύνσεις × MPX, δυναμικά V⁰, U⁰ (m²/s²) × MPX². Ο χρόνος παραμένει σε s.
+    MPX = METERS_TO_PIXELS
+    sfm = USE_SFM ? SocialForce(pathfinderPM;
+        offset = (0.5, 0.5),                # το cell (i, j) του walkmap έχει κέντρο το σημείο (i, j) (όπως τα waypoints του path)
+        tau = 0.5,                          # χρόνος χαλάρωσης τ (s)
+        V0 = 2.1 * MPX^2, sigma = 0.3 * MPX,    # άπωση πεζών V⁰ exp(−b/σ)
+        step_time = 2.0,                    # Δt του eq (4) (s)
+        U0 = 10.0 * MPX^2, R = 0.2 * MPX,       # άπωση τοίχων U⁰ exp(−r/R)
+        angle_of_sight = 200.0, c = 0.5,    # οπτικό πεδίο 2φ = 200°, βάρος c εκτός αυτού
+        vmax_factor = 1.3,                  # v_max = 1.3 v⁰
+        interaction_range = 4.0 * MPX,      # αγνοούνται πεζοί πιο μακριά από 4 m
+        waypoint_radius = SFM_WAYPOINT_RADIUS,
+    ) : nothing
+
     # ιδιότητες προσβάσιμες μέσα στο μοντέλο ως model.<όνομα>
     properties = (
         pathfinderPM = pathfinderPM,
@@ -119,6 +142,7 @@ begin   # Ορισμός του pathfinder D* Lite και των ιδιοτήτ�
         dt = dt,
         speed_range = speed_range,
         goal = dests,
+        sfm = sfm,
     )
 end
 
@@ -166,8 +190,10 @@ end
 function agent_step!(person, model)
     # αν ο agent έχει φτάσει σε έξοδο: καταγράφει τη θέση και σταματά (δεν κινείται, δεν συσσωρεύει TL)
     if at_goal(person.pos, model.goal)
-        push!(person.pathX, person.pos[1])
-        push!(person.pathY, person.pos[2])
+        if isnothing(model.sfm)                                                  # με SFM το trail ενημερώνεται στο model_step! μετά την κίνηση
+            push!(person.pathX, person.pos[1])
+            push!(person.pathY, person.pos[2])
+        end
         return
     end
 
@@ -194,19 +220,48 @@ function agent_step!(person, model)
         speed = 0.0                                                              # θανατηφόρο φορτίο: ο agent ακινητοποιείται
     end
 
-    # use the global `pathfinderPM` (do not mutate model properties)
-    # κίνηση κατά μήκος του path με ταχύτητα μετατραμένη σε pixels
-    move_along_precomputed_path!(person, speed * METERS_TO_PIXELS, model.dt)
-    push!(person.pathX, person.pos[1])                                           # καταγραφή νέας θέσης για το trail
-    push!(person.pathY, person.pos[2])
+    if isnothing(model.sfm)
+        # κίνηση κατά μήκος του path με ταχύτητα μετατραμένη σε pixels
+        move_along_precomputed_path!(person, speed * METERS_TO_PIXELS, model.dt)
+        push!(person.pathX, person.pos[1])                                       # καταγραφή νέας θέσης για το trail
+        push!(person.pathY, person.pos[2])
+    else
+        # SFM: η ταχύτητα που προκύπτει από το τοξικό φορτίο γίνεται η επιθυμητή ταχύτητα v⁰ του πεζού (σε pixels/s)·
+        # η κίνηση γίνεται στο model_step! με το social_force_step! (v_max = 1.3 v⁰, η w/v διατηρούνται)
+        set_pedestrian!(model.sfm, person, model; v0 = speed * METERS_TO_PIXELS)
+    end
 end
 
 
 
 # Βήμα του μοντέλου: ελαστικές συγκρούσεις μεταξύ γειτονικών agents (ακτίνα 0.012, βάσει μάζας)
 function model_step!(model)
-    for (a1, a2) in interacting_pairs(model, 0.012, :nearest)
-        elastic_collision!(a1, a2, :mass)
+    if isnothing(model.sfm)
+        for (a1, a2) in interacting_pairs(model, 0.012, :nearest)
+            elastic_collision!(a1, a2, :mass)
+        end
+        return
+    end
+
+    # Social Force Model: η άπωση από άλλους πεζούς και τοίχους αντικαθιστά τις ελαστικές συγκρούσεις.
+    sfm = model.sfm
+    movers = AgentEscapes[]                                                      # agents που κινούνται σε αυτό το βήμα
+    for a in allagents(model)
+        if at_goal(a.pos, model.goal)
+            delete!(sfm.pedestrians, a.id)                                       # διέφυγε: δεν συμμετέχει πια στο SFM (ούτε απωθεί)
+        elseif a.toxicload >= 3.0
+            ped = sfm.pedestrians[a.id]                                          # ακινητοποιημένος (TL ≥ 3): μένει ως ακίνητο εμπόδιο
+            ped.w = zero(ped.w); ped.v = zero(ped.v); ped.e = zero(ped.e)
+        else
+            push!(movers, a)
+        end
+    end
+    for _ in 1:SFM_SUBSTEPS                                                      # SFM_SUBSTEPS υπο-βήματα dt/SFM_SUBSTEPS (σύγχρονη ενημέρωση)
+        social_force_step!(model, sfm, sfm_desired_direction, model.dt / SFM_SUBSTEPS; agents = movers)
+    end
+    for a in allagents(model)                                                    # καταγραφή θέσης για το trail (και των όσων διέφυγαν)
+        push!(a.pathX, a.pos[1])
+        push!(a.pathY, a.pos[2])
     end
 end
 
@@ -226,7 +281,7 @@ begin   # Δημιουργία των agents σε τυχαίες βατές θέ
         mass = rand(abmrng(model)) * (mass_range[2]-mass_range[1]) + mass_range[1]            # τυχαία μάζα εντός mass_range
         vel = Tuple(rand(abmrng(model), 2) .* (speed_range[2]-speed_range[1]) .+ speed_range[1])  # τυχαία αρχική ταχύτητα (vx, vy)
 
-        # Keep trying to find a valid spawn position that is walkable (not in white/black areas)
+        # Keep trying to find a valid spawn position that is walkable (walkmap == true)
         max_attempts = 1000     # μέγιστος αριθμός προσπαθειών εύρεσης βατής θέσης
         attempts = 0
         pos = nothing
@@ -253,21 +308,23 @@ begin   # Δημιουργία των agents σε τυχαίες βατές θέ
         # προσθήκη του agent στο μοντέλο με αρχικές τιμές για όλα τα πεδία του AgentEscapes
         person = add_agent!(
             pos, AgentEscapes, model,
-            vel, age, mass, 1.,        # (αρχικό toxicload = 1.)
+            vel, age, mass, 0.,        # (αρχικό toxicload = 0.)
             Tuple{Int,Int}[],     # path
             [pos[1]],             # pathX
             [pos[2]],             # pathY
             [0.0], [0.0], [0.0]
-        )        # plan using the global `pathfinderPM`
+        )
+        # SFM: εγγραφή του agent (ξεκινά ακίνητος· v⁰ = 1.35 m/s όπως η κανονική ταχύτητα, ενημερώνεται σε κάθε βήμα από το τοξικό φορτίο)
+        isnothing(sfm) || set_pedestrian!(sfm, person, model; v0 = 1.35 * METERS_TO_PIXELS, velocity = (0.0, 0.0))
     end
 end
 
 
 # Υπολογίζει τους πίνακες (Balpha, Btime, Brho) του μοντέλου τοξικού φορτίου από τα όρια AEGL του H2S:
 # για κάθε σύμπτωμα (οσμή, ερεθισμός, οίδημα) δίνει συγκεντρώσεις, χρόνους και εκθέτες power-law
-# που χρησιμοποιεί η update_toxic_load.
+# που χρησιμοποιεί η tl_rate (καλείται από την update_toxic_load).
 function setupToxic()                                               # Define the setupToxic function
-    Atime = [0.0, 2.0, 5.0, 8.0, 15.0, 30.0] #min                # Define the Atime array as a 1x6 matrix                                    # Initialization of the 5 standard AEGL exposure times
+    Atime = [0.0, 2.0, 5.0, 8.0, 15.0, 30.0] #min                # Define the Atime array as a vector of 6 elements                                    # Initialization of the 5 standard AEGL exposure times
     Arho = zeros(3, 6)                                              # Define the Arho array as a 3x6 matrix                                     # the concentration of the three symptoms compared to the AEGL concentrations
     Arho[1, 2:6] = [2.87, 2.33, 2.09, 1.81, 1.55]                   # Define the Arho array for the first row and columns 2 to 6                # odor
     Arho[2, 2:6] = [202.38, 164.38, 147.74, 128.10, 109.45]         # Define the Arho array for the second row and columns 2 to 6               # irritation
@@ -275,13 +332,13 @@ function setupToxic()                                               # Define the
     MW = 34 #Molecular weight of H2S in g/mol
     Arho *= MW/24.04 #mg/m^3                                        # Multiply the Arho array by the molecular weight of H2S divided by 24.04
     Arho = Arho'                                                    # Transpose the Arho array 
-    Atime = Atime*60 #seconds                                       # Multiply the Atime array by 60 seconds to convert to seconds              
-    taumin = 200.                                                   # Define the taumin variable as 200 seconds (Borris&Patnaik, 2014)          # shortest exposure time over which an AEGL 1, 2 or 3 onset can be reached
-    taumax = 86400.                                                 # Define the taumax variable as 86400 seconds (Borris&Patnaik, 2014)        # longest exposure time over which an AEGL 1, 2 or 3 onset can be reached
-    Brho = zeros(7,3)                                               # Define the Brho array as a 7x3 matrix of zeros                            # in ppm for each AEGL band at every time step ‘Atime’
+    Atime = Atime*60 #seconds                                       # Multiply the Atime array by 60 to convert from minutes to seconds              
+    taumin = 200.                                                   # Define the taumin variable as 200 seconds (Boris&Patnaik, 2014)          # shortest exposure time over which an AEGL 1, 2 or 3 onset can be reached
+    taumax = 86400.                                                 # Define the taumax variable as 86400 seconds (Boris&Patnaik, 2014)        # longest exposure time over which an AEGL 1, 2 or 3 onset can be reached
+    Brho = zeros(7,3)                                               # Define the Brho array as a 7x3 matrix of zeros                            # in mg/m^3 for each AEGL band at every time step ‘Atime’
     Balpha = zeros(7,3)                                             # Define the Balpha array as a 7x3 matrix of zeros                          # power-law exponents
-    rhomax = zeros(1,3)                                             # Define the rhomax array as a 1x3 matrix of zeros                          # maximum concentration of H2S exposed by each agent
-    rhomin = zeros(1,3)                                             # Define the rhomin array as a 1x3 matrix of zeros                          # minimum concentration of H2S exposed by each agent
+    rhomax = zeros(1,3)                                             # Define the rhomax array as a 1x3 matrix of zeros                          # maximum concentration of H2S per symptom (the one giving an onset time of taumin)
+    rhomin = zeros(1,3)                                             # Define the rhomin array as a 1x3 matrix of zeros                          # minimum concentration of H2S per symptom (the one giving an onset time of taumax)
     Btime = zeros(7, 3)                                             # Define the Btime array as a 7x3 matrix of zeros                           # represents an array, which is function of ‘taumin’ and ‘taumax’, that changes depending on alpha, which is a corresponsing array of power low exponents interpolating the ‘Brho’ table array
 
     #Initialize
@@ -313,7 +370,7 @@ function setupToxic()                                               # Define the
         #Balpha[6, k] = Balpha[5, k]
     end
     #extrapolate for the edges
-    # εξαγωγή των ακραίων συγκεντρώσεων: rhomax (για taumin) στη θέση 1 και rhomin (για taumax) στη θέση 7
+    # παρέκταση των ακραίων συγκεντρώσεων: rhomax (για taumin) στη θέση 1 και rhomin (για taumax) στη θέση 7
     for k=1:3
         if Balpha[3, k]==0
             rhomax[k] = Brho[2, k];
@@ -327,7 +384,7 @@ function setupToxic()                                               # Define the
             rhomin[k] = Brho[6, k];
             Brho[7, k] = rhomin[k];
         else
-            rhomin[k] = Brho[6, k]*(Btime[6, k]/taumax)^(1/Balpha[6, k]); #I fixed Brho[6] to be Brho[6, k]
+            rhomin[k] = Brho[6, k]*(Btime[6, k]/taumax)^(1/Balpha[6, k]);
             Brho[7, k] = rhomin[k];
         end
 
@@ -354,7 +411,7 @@ function setupToxic()                                               # Define the
     return Balpha, Btime, Brho'
 end
 
-# Υπολογισμός των πινάκων τοξικότητας μία φορά (global, χρησιμοποιούνται από την update_toxic_load)
+# Υπολογισμός των πινάκων τοξικότητας μία φορά (global, χρησιμοποιούνται από την tl_rate)
 Balpha, Btime, Brho = setupToxic()
 # Suffix for exports: new AEGL tables in setupToxic() + 0.5 CM context
 run_export_tag = "newAEGL_0.5CM_uncappedTL"                                 # ετικέτα στα ονόματα αρχείων εξόδου
@@ -362,63 +419,66 @@ run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")            # χ
 
 
 
-# Ενημερώνει το τοξικό φορτίο (TL) των τριών συμπτωμάτων για έκθεση σε συγκέντρωση Ct επί χρόνο dt
-function update_toxic_load(Ct, TLcurrent, dt)
-
-    #a = alpha
-    #Btime = Btime;
-    #Brho = Brho;
-    TL = TLcurrent          # τρέχον φορτίο (τροποποιείται in-place)
-    TL_rate = 0.0           # ρυθμός αύξησης του TL (s^-1)
-
-    for k = 1:3             # για κάθε σύμπτωμα
-        Cmin = Brho[k, 7]   # συγκέντρωση κάτω από την οποία δεν υπάρχει επίδραση
-        Cmax = Brho[k, 1]   # συγκέντρωση πάνω από την οποία ο ρυθμός είναι ο μέγιστος
-        if Ct > Cmax
-            TL_rate = 1 / Btime[1];      # πάνω από Cmax: μέγιστος ρυθμός (1/taumin)
-        elseif Ct < Cmin
-            TL_rate = 0.0;               # κάτω από Cmin: καμία αύξηση
-        else
-            # ενδιάμεση συγκέντρωση: βρίσκει το διάστημα (Brho[i-1], Brho[i]) που περιέχει το Ct
-            for i in 2:size(Btime, 1)
-                if i <= size(Brho, 2)
-                    if Brho[k, i-1] < Ct && Ct < Brho[k, i] #check
-                        TL_rate = (1/Btime[i, k])*((Ct/Brho[k, i])^(Balpha[i, k])) #Toxic Load rate in units of s^-1
-                    end
-                end
-            end
-        end
-        TL[k] = TL[k] .+ TL_rate * dt;   # ολοκλήρωση: προσθήκη ρυθμού × χρονικού βήματος
-
+# Ρυθμός συσσώρευσης τοξικού φορτίου dTL/dt (s^-1) για πυκνότητα rho (mg/m^3) και επίπεδο AEGL k (1, 2, 3).
+# Πιστή μεταφορά της συνάρτησης TL_RATE του Boris & Patnaik (2014), NRL/MR/6003--14-9493, Παράρτημα A:
+#   dTL/dt = (rho / Brho(b,k))^alpha(b,k) / Btime(b,k),  όπου b είναι η ζώνη πυκνότητας στην οποία ανήκει το rho.
+# Αντιστοίχιση δεικτών: ο δείκτης b του paper (0..6) είναι b+1 εδώ, δηλαδή Brho(b,k) = Brho[k, b+1],
+# Btime(b,k) = Btime[b+1, k], alpha(b,k) = Balpha[b+1, k]. Άρα Brho[k, 1] = rhomax και Brho[k, 7] = rhomin.
+# Σημείωση: το paper επιστρέφει 1.0E-6 s^-1 ως "καμία συσσώρευση" (αριθμητική προστασία για το 1/TL_RATE),
+# ενώ στο κείμενο ορίζει "hard zero" για πυκνότητες κάτω από rhomin· εδώ χρησιμοποιείται 0.0.
+function tl_rate(rho, k)
+    # rho κάτω από τη χαμηλότερη τιμή του πίνακα AEGL, Brho(5,k)
+    if rho < Brho[k, 6]
+        Balpha[7, k] == 0.0 && return 0.0                       # alpha(6,k) == 0: threshold, καμία συσσώρευση
+        rho >= Brho[k, 7] || return 0.0                         # rho < rhomin: καμία συσσώρευση (hard zero)
+        return (rho / Brho[k, 6])^Balpha[6, k] / Btime[6, k]    # επέκταση του power law μέχρι τον taumax
     end
-        #TL[iAg, :] .= sum(TL .> 1) .+ TL[min(3, sum(TL .> 1) + 1)] .* (1 - (TL[3] > 1));
-        #TL[iAg, :] .= person.toxicload;
 
+    # rho >= rhomax: μέγιστος ρυθμός συσσώρευσης 1/taumin
+    rho >= Brho[k, 1] && return 1.0 / Btime[1, k]
+
+    # επιλογή της ζώνης b (κάτω όριο της περιοχής πυκνότητας)
+    if rho < Brho[k, 5] && Brho[k, 5] != Brho[k, 6]
+        b = 5
+    elseif rho < Brho[k, 4] && Brho[k, 4] != Brho[k, 5]
+        b = 4
+    elseif rho < Brho[k, 3] && Brho[k, 3] != Brho[k, 4]
+        b = 3
+    elseif rho < Brho[k, 2]
+        b = 2
+    else
+        b = 1                                                   # Brho(1,k) <= rho < rhomax
+    end
+    return (rho / Brho[k, b+1])^Balpha[b+1, k] / Btime[b+1, k]
+end
+
+
+# Ενημερώνει το τοξικό φορτίο TL των τριών επιπέδων AEGL για έκθεση σε πυκνότητα Ct επί χρόνο dt.
+# TL_k >= 1 σημαίνει ότι έχει επιτευχθεί η έναρξη των συμπτωμάτων του AEGL k.
+function update_toxic_load(Ct, TLcurrent, dt)
+    TL = TLcurrent
+    for k = 1:3
+        TL[k] = TL[k] + tl_rate(Ct, k) * dt     # ολοκλήρωση: TL_k += (dTL/dt)_k * dt
+    end
     return TL
 end
 
 
 
-# Στατικό σχέδιο για το plot του ABM: σχεδιάζει τις εξόδους και το trail κάθε agent
-function static_preplot!(ax, abmplot)
-    # 1) Ξεπακετάρουμε το Observable
-    model = isa(abmplot, Observable)  ? abmplot[] :
-            hasproperty(abmplot, :model) ? abmplot.model[] :
-            abmplot
-
-    # 2) Σχεδιάζουμε τα goals
-    dests = model.goal
-    xs_g = getindex.(dests, 1)
-    ys_g = getindex.(dests, 2)
-    scatter!(ax, xs_g, ys_g; color = (:red, 50), marker = '●')
-
-    # 3) Σχεδιάζουμε για κάθε agent τη διαδρομή που έχει ήδη κάνει
-    for agent in allagents(model)
-        xs = agent.pathX
-        ys = agent.pathY
-        # π.χ. χρώμα ίδια με τον agent, πάχος γραμμής 2
-        lines!(ax, xs, ys; linewidth = 2, color = personcolor(agent))
+# Επιθυμητή κατεύθυνση e_α (eq 1 του paper) για το SFM: μοναδιαίο διάνυσμα προς το επόμενο waypoint του a.path.
+# Waypoints πιο κοντά από SFM_WAYPOINT_RADIUS θεωρούνται επιτευγμένα και αφαιρούνται· χωρίς path ο agent δεν έχει κατεύθυνση.
+function sfm_desired_direction(agent, model)
+    while !isempty(agent.path)
+        cell = agent.path[1]                                                     # επόμενο waypoint (το cell (i, j) ως σημείο (i, j))
+        r = SVector{2,Float64}(cell[1] - agent.pos[1], cell[2] - agent.pos[2])   # διάνυσμα προς το waypoint
+        d = norm(r)
+        if d <= SFM_WAYPOINT_RADIUS
+            popfirst!(agent.path)                                                # επιτεύχθηκε: επόμενο waypoint
+            continue
+        end
+        return r / d
     end
+    return SVector{2,Float64}(0.0, 0.0)
 end
 
 
@@ -469,7 +529,7 @@ end
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 2500      # συνολικός αριθμός frames/βημάτων της προσομοίωσης
-    # CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T = 2500 s.
+    # CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at ≈70% of T = 2500 s (last switch at 1752 s).
     # Time counter is t = (frame - 1) * dt.
     const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
 
@@ -582,7 +642,7 @@ end
 
     # ονόματα αρχείων εξόδου (βίντεο και CSV) με παραμέτρους της εκτέλεσης και timestamp
     video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
-    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"  # added
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"
 
     # keep a variable for the currently active map index
     # δείκτης του ενεργού concentration map (ξεκινά από το 1ο)
@@ -634,7 +694,7 @@ end
         # 1) step the model normally (simulation time only)
         simulation_time[] += @elapsed step!(model, 1)
 
-        # 2) determine which CM index should be active on this frame (1..NUM_MAPS)
+        # 2) determine which CM index should be active on this frame (1..NUM_CMS)
         global current_map_idx  # Declare `current_map_idx` as global
         t_sim = (frame - 1) * dt                                    # τρέχων χρόνος προσομοίωσης (s)
         new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)          # τελευταίο CM του οποίου ο χρόνος ενεργοποίησης έχει περάσει
@@ -650,15 +710,11 @@ end
             NPM = heightmap .+ penalty_map
             NPM_int = round.(Int, NPM)
 
-            # recreate the cost_metric_obj with the new NPM_int
-            global cost_metric_obj
-            cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-
             # update cost metric IN-PLACE (no new DStarLite)
             pathfinderPM.cost_metric.pmap .= NPM_int
 
-            # find changed cells (you already have logic for this)
-            changed_cells = find_changed_cells(prev_NPM_int, NPM_int) # <-- use your existing diff logic
+            # find the cells whose cost changed with respect to the previous cost map
+            changed_cells = find_changed_cells(prev_NPM_int, NPM_int)
             prev_NPM_int .= NPM_int  
 
             # --- Path planning time (replanning): D* Lite update + per-agent path extraction ---
@@ -710,7 +766,7 @@ end
             ))
         end
 
-        # 5) record runs for T frames (fixed horizon)
+        # 5) accumulate the time spent on this frame's logic (used in the timing summary)
         frame_logic_time[] += (time_ns() - t_frame_start) / 1e9
     end
     # Whatever record() spent outside our do-block is Makie rendering + ffmpeg encoding
@@ -744,7 +800,7 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
     # Φόρτωση CSV με step, agent_id, toxicload
     csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
-        # αν δεν δοθεί seed, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
+        # αν δεν δοθεί seed ή δεν υπάρχει το αρχείο, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
         pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *DStarLite_SCENARIO_3_$(seed)*.csv στο $(folder)."
@@ -762,7 +818,7 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
     centers_inner = (edges_inner[1:end-1] .+ edges_inner[2:end]) ./ 2
     bin_w_inner   = 0.45
 
-    # Άκρες (0 και 3) σαν ξεχωριστές μπάρες με μικρό offset για να μην επικαλύπτονται
+    # Άκρες (TL = 0 και TL ≥ 3) σαν ξεχωριστές μπάρες με μικρό offset για να μην επικαλύπτονται
     edge_offset = 0.30
     x0_pos      = 0.0 - edge_offset   # π.χ. -0.30
     x3_pos      = 3.0 + edge_offset   # π.χ.  3.30
@@ -781,7 +837,7 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
         return counts
     end
 
-    # Formatter για ticks (χωρίς ->)
+    # Formatter για ticks
     # στρογγυλοποίηση των ticks του άξονα x σε 1 δεκαδικό (για μία τιμή και για διάνυσμα τιμών)
     function mytickfmt(x::Real)
         string(round(x; digits=1))
@@ -792,7 +848,7 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
 
     # --- Παράμετροι χρόνου / y-scale ---
     T_avail = maximum(df.step)              # διαθέσιμα frames στο CSV
-    T_play  = min(T, T_avail)               # παίξε μέχρι 400 ή όσο υπάρχει
+    T_play  = min(T, T_avail)               # παίξε μέχρι T frames ή όσα υπάρχουν στο CSV (το μικρότερο από τα δύο)
     n_agents_guess = maximum(combine(groupby(df, :step), nrow).nrow)    # μέγιστος αριθμός agents ανά frame (όριο του άξονα y)
 
     # --- Figure / Axis ---
@@ -804,12 +860,12 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
         yticks = 0:10:n_agents_guess          # δείκτες Υ ανά 10
     )
     xlims!(ax, -0.5, 3.5)                      # λίγο περιθώριο για τις άκρες
-    ylims!(ax, 0, n_agents_guess)              # προσαρμόσ’ το αν θες
+    ylims!(ax, 0, n_agents_guess)              # όριο y = μέγιστος αριθμός agents ανά frame
 
     xt = collect(0.0:0.5:3.0)                  # θέσεις ticks στον άξονα x
     ax.xticks = xt
     ax.xtickformat = mytickfmt
-    ax.xticklabelrotation = pi/4               # προαιρετικό
+    ax.xticklabelrotation = pi/4               # περιστροφή των ετικετών του x κατά 45°
 
     # Overlay χρόνου
     frame_obs = Observable(0)                  # τρέχον frame για το label χρόνου
@@ -820,7 +876,7 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
     # --- Τρία layers μπαρών: εσωτερικά + 0 + 3 ---
     y_inner = Observable(zeros(Float64, length(centers_inner)))  # (0,3) ανά 0.5
     y0      = Observable([0.0])                                  # bin για 0
-    y3      = Observable([0.0])                                  # bin για 3
+    y3      = Observable([0.0])                                  # bin για TL ≥ 3
 
     # Χρώματα για τα εσωτερικά bins ανά TL ζώνη (με βάση το center του bin)
     inner_cols = [ c for x in centers_inner for c in
@@ -831,7 +887,7 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
     # εσωτερικές μπάρες (vector χρωμάτων)
     barplot!(ax, centers_inner, y_inner; width = bin_w_inner, color = inner_cols, strokewidth = 0)
 
-    # άκρες: 0 = γκρι, 3 = κόκκινο
+    # άκρες: TL = 0 → γκρι, TL ≥ 3 → κόκκινο
     barplot!(ax, [x0_pos], y0; width = bin_w_edge, color = :gray35,  strokewidth = 0)
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
@@ -842,7 +898,7 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
         tl = Vector(df[df.step .== frame, :toxicload])    # τοξικά φορτία όλων των agents στο συγκεκριμένο frame
 
         count0       = count(==(0.0), tl)                 # ακριβώς 0
-        count3       = count(==(3.0), tl)                 # ακριβώς 3
+        count3       = count(>=(3.0), tl)                 # TL ≥ 3 (περιλαμβάνει και τους agents με TL > 3)
         counts_inner = bin_counts_open(tl, edges_inner)   # μόνο (0,3) ανά 0.5
 
         # ενημέρωση των υψών των μπαρών (το Makie ξανασχεδιάζει αυτόματα)
@@ -850,8 +906,6 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
         y0[]      = [Float64(count0)]
         y3[]      = [Float64(count3)]
 
-        # Προαιρετικό auto-scale μόνο στον Υ:
-        # ylims!(ax, 0, max(1, maximum(vcat(y0[][1], y_inner[], y3[][1]))))
     end
 
     println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")
