@@ -28,8 +28,8 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
 end
 
 const NUM_CMS = 7                                                   # πλήθος concentration maps (CM1..CM7)
-const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]   # Thesis, Table 7: χρόνοι εναλλαγής CM (s)
-const GOAL_RADIUS = 10.0                                            # ακτίνα (pixels) γύρω από την έξοδο που θεωρείται «διέφυγε»
+const CM_SWITCH_TIMES = [0.0, 0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0]   # εκκίνηση κατευθείαν από το CM2 (το CM1 παραλείπεται), μετά εναλλαγή ανά 292 s
+const GOAL_RADIUS_M = 5.0                                           # ακτίνα (m) γύρω από την έξοδο που θεωρείται «διέφυγε» (στο σενάριο: 10 pixels)
 const WHITE_THRESHOLD = 245                                         # (255 - τιμή heightmap) > 245: μη βατό
 const SFM_SUBSTEPS = 20                                             # υπο-βήματα SFM ανά βήμα μοντέλου (dt_sfm = 0.05 s << τ = 0.5 s)
 const SFM_WAYPOINT_RADIUS = 0.5                                     # (pixels) απόσταση στην οποία ένα waypoint θεωρείται επιτευγμένο
@@ -60,7 +60,7 @@ end
     return (clamp(Int(floor(p[1])), 1, dims[1]), clamp(Int(floor(p[2])), 1, dims[2]))
 end
 
-at_goal(pos, dests, radius = GOAL_RADIUS) = minimum(hypot(pos[1] - d[1], pos[2] - d[2]) for d in dests) <= radius
+at_goal(pos, dests, radius) = minimum(hypot(pos[1] - d[1], pos[2] - d[2]) for d in dests) <= radius
 
 function find_changed_cells(old::AbstractMatrix{Int}, new::AbstractMatrix{Int})
     cells = Tuple{Int,Int}[]
@@ -95,7 +95,7 @@ end
 # --- Βήματα του μοντέλου ---
 
 function agent_step!(person, model)
-    at_goal(person.pos, model.goal) && return                                    # διέφυγε: δεν κινείται, δεν συσσωρεύει TL
+    at_goal(person.pos, model.goal, model.goal_radius) && return                                   # διέφυγε: δεν κινείται, δεν συσσωρεύει TL
 
     pm = model.penalty_map
     i = clamp(Int(floor(person.pos[1])), 1, size(pm, 1))
@@ -120,7 +120,7 @@ function model_step!(model)
     sfm = model.sfm
     movers = AgentEscapes[]
     for a in allagents(model)
-        if at_goal(a.pos, model.goal)
+        if at_goal(a.pos, model.goal, model.goal_radius)
             delete!(sfm.pedestrians, a.id)                                       # διέφυγε: δεν απωθεί πια
         elseif a.toxicload >= 3.0
             ped = sfm.pedestrians[a.id]                                          # ακινητοποιημένος: ακίνητο εμπόδιο
@@ -167,7 +167,7 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
     walkmap[heightmap .> WHITE_THRESHOLD] .= false                               # μη βατά: τοίχοι και εκτός εγκατάστασης
 
     cm_list = load_cms(cm_dir, dims)
-    penalty_map = copy(cm_list[1])                                               # το τρέχον CM λειτουργεί ως penalty_map
+    penalty_map = copy(cm_list[searchsortedlast(CM_SWITCH_TIMES, 0.0)])                                               # το τρέχον CM λειτουργεί ως penalty_map
     NPM_int = round.(Int, heightmap .+ penalty_map)                              # ανάγλυφο + τοξική συγκέντρωση
 
     # έξοδοι: το goal_cell (γραμμή, στήλη) που υπολόγισε το Live Service, ως σημεία (x = γραμμή, y = στήλη)
@@ -204,7 +204,8 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
         waypoint_radius = SFM_WAYPOINT_RADIUS,
     )
 
-    properties = (; pathfinderPM, dt = 1.0, goal = dests, sfm, penalty_map, mpx, tox = setup_toxic())
+    goal_radius = GOAL_RADIUS_M * mpx                                            # ακτίνα διαφυγής σε pixels του grid
+    properties = (; pathfinderPM, dt = 1.0, goal = dests, goal_radius, sfm, penalty_map, mpx, tox = setup_toxic())
     model = ABM(AgentEscapes, space; rng = rng, properties = properties, agent_step! = agent_step!, model_step! = model_step!)
 
     n_agents = Int(get(cfg, :n_agents, 100))
@@ -234,12 +235,12 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
         save(joinpath(dir, "cm_$k.png"), Gray{N0f8}.(clamp.(cm_list[k] ./ 255.0, 0.0, 1.0)))
     end
     write_json(joinpath(dir, "meta.json"), (; n_agents = length(ids), T, dt = 1.0, seed, rows = dims[1], cols = dims[2],
-        meters_per_pixel = 1 / mpx, cm_switch_times = CM_SWITCH_TIMES, num_cms = NUM_CMS, goal_radius = GOAL_RADIUS,
+        meters_per_pixel = 1 / mpx, cm_switch_times = CM_SWITCH_TIMES, num_cms = NUM_CMS, goal_radius, goal_radius_m = GOAL_RADIUS_M,
         goals = [(; col = d[2] - 0.5, row = d[1] - 0.5) for d in dests], stride = 4, no_path))
 
     # κύριος βρόχος: βήμα μοντέλου, εναλλαγή CM με replanning, καταγραφή frame
     escaped_at = Dict{Int,Int}()                                                 # id => frame διαφυγής
-    current_map_idx = 1
+    current_map_idx = searchsortedlast(CM_SWITCH_TIMES, 0.0)
     t_sim_total = 0.0
     t_replan_total = 0.0
     buf = Vector{Float32}(undef, 4 * length(ids))
@@ -271,7 +272,7 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
 
             for (k, id) in enumerate(ids)
                 a = model[id]
-                esc = at_goal(a.pos, dests)
+                esc = at_goal(a.pos, dests, goal_radius)
                 esc && !haskey(escaped_at, id) && (escaped_at[id] = frame)
                 buf[4k-3] = a.pos[2] - 0.5                                       # στήλη (x της εικόνας)
                 buf[4k-2] = a.pos[1] - 0.5                                       # γραμμή (y της εικόνας)

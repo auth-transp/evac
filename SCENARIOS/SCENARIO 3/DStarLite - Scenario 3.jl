@@ -117,7 +117,8 @@ begin   # Ορισμός του pathfinder D* Lite και των ιδιοτήτ�
     # και τις ελαστικές συγκρούσεις. Ο D* Lite δίνει ΜΟΝΟ την επιθυμητή κατεύθυνση (προς το επόμενο waypoint του a.path)·
     # οι δυνάμεις (επιτάχυνση, άπωση από άλλους πεζούς και από τοίχους) καθορίζουν την πραγματική κίνηση.
     # USE_SFM = false: η αρχική κίνηση (move_along_precomputed_path! + elastic_collision!).
-    USE_SFM = true
+    # Default false: ίδια κίνηση με όλα τα άλλα σενάρια και τα benchmarks, ώστε τα αποτελέσματα να είναι συγκρίσιμα.
+    USE_SFM = false
     SFM_SUBSTEPS = 20               # υπο-βήματα του SFM ανά βήμα του μοντέλου (dt_sfm = dt/20 = 0.05 s· πρέπει να είναι << τ = 0.5 s)
     SFM_WAYPOINT_RADIUS = 0.5       # (pixels) απόσταση στην οποία ένα waypoint του path θεωρείται ότι επιτεύχθηκε
     # Οι παράμετροι του paper είναι σε μέτρα/δευτερόλεπτα· ο χώρος του μοντέλου είναι σε pixels (1 m = METERS_TO_PIXELS px),
@@ -685,16 +686,13 @@ end
     prev_NPM_int = copy(NPM_int)    # αντίγραφο του προηγούμενου χάρτη κόστους, για εντοπισμό αλλαγών
 
 
-    # Κύρια εγγραφή: για κάθε frame κάνει βήμα προσομοίωσης, ελέγχει αλλαγή CM, ενημερώνει γραφικά και δεδομένα
+    # Κύρια εγγραφή: για κάθε frame ελέγχει πρώτα αλλαγή CM (και επανασχεδιάζει), μετά κάνει βήμα προσομοίωσης, ενημερώνει γραφικά και δεδομένα
     record_time = @elapsed record(fig, video_file, 1:T; framerate=30) do frame
         t_frame_start = time_ns()   # αρχή μέτρησης χρόνου του frame
         # update frame counter observable
         frame_obs[] = frame
 
-        # 1) step the model normally (simulation time only)
-        simulation_time[] += @elapsed step!(model, 1)
-
-        # 2) determine which CM index should be active on this frame (1..NUM_CMS)
+        # 1) determine which CM index should be active on this frame (1..NUM_CMS)
         global current_map_idx  # Declare `current_map_idx` as global
         t_sim = (frame - 1) * dt                                    # τρέχων χρόνος προσομοίωσης (s)
         new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)          # τελευταίο CM του οποίου ο χρόνος ενεργοποίησης έχει περάσει
@@ -738,6 +736,11 @@ end
 
             println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
         end
+
+        # 2) step the model AFTER the CM check: the new CM is already active in the step that starts at
+        #    t = CM_SWITCH_TIMES[k] (same order in every scenario and benchmark)
+        # Το βήμα εκτελείται μετά τον έλεγχο εναλλαγής CM, ώστε το νέο CM να ισχύει ήδη στο βήμα που ξεκινά στο t = CM_SWITCH_TIMES[k] (ίδια σειρά σε όλα τα σενάρια και benchmarks).
+        simulation_time[] += @elapsed step!(model, 1)
 
         # 3) update trails/visuals: append only the points added to pathX/pathY since last frame
         for (i, a) in enumerate(allagents(model))

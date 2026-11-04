@@ -213,12 +213,12 @@ export function drawSim(ctx, vp, g, showCm) {
     ctx.beginPath(); ctx.arc(X(e.col), Y(e.row), sim.meta.goal_radius / g.f, 0, 7);
     ctx.strokeStyle = 'rgba(255,59,48,.9)'; ctx.stroke();
   });
-  const r = Math.max(3 * px, 2.2 / g.f);
+  const r = Math.max(1.5 * px, 0.45 / g.f);              // μικρά εικονίδια: τουλάχιστον 1.5 px ακτίνα, και μεγαλώνουν με το zoom
   for (let k = 0; k < sim.n; k++) {
     const o = base + k * sim.stride;
     ctx.beginPath(); ctx.arc(X(sim.data[o]), Y(sim.data[o + 1]), r, 0, 7);
     ctx.fillStyle = personColor(sim.data[o + 2], sim.data[o + 3] > 0.5); ctx.fill();
-    ctx.lineWidth = px; ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.stroke();
+    ctx.lineWidth = 0.6 * px; ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.stroke();
   }
 }
 

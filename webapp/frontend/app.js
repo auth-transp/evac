@@ -2,6 +2,7 @@
 import { upload, post, toB64, fromB64 } from './api.js';
 import { Viewport } from './view.js';
 import { render } from './render.js';
+import { mapAvailable, showMap, startDraw, clearPolygon, getPolygon, getMap, onPolygonChange, searchPlaces, goTo } from './map.js';
 import { sim, initSim, startSim, cancelSim, resetSim, togglePlay, userScrub, setSpeed, drawCharts } from './sim.js';
 
 const $ = id => document.getElementById(id);
@@ -20,7 +21,9 @@ const s = {
   hmImg: null, built: false, groundSample: null, showCm: true,
   view: 'image', tool: 'none', step: 'image', regionMode: 'add',
   brushClass: 1, brushSize: 3, brushCursor: null,
+  fromMap: false,                                  // true: το project προέρχεται από δεδομένα OpenStreetMap (το grid είναι η «εικόνα»)
 };
+let sourceMode = 'map';                            // πηγή του project: 'map' (OpenStreetMap) ή 'image' (ανέβασμα εικόνας)
 
 const vp = new Viewport(canvas, redraw);
 function redraw() {
@@ -37,7 +40,23 @@ function setStep(name) {
   s.step = name;
   if (name === 'sim') requestAnimationFrame(drawCharts);       // τα γραφήματα μετρούν το πλάτος τους όταν το βήμα είναι ορατό
   document.querySelectorAll('.step').forEach(el => el.classList.toggle('active', el.dataset.step === name));
+  updateMapVisibility();
   setTool(STEP_TOOL[name]());
+}
+
+// Ο χάρτης OpenStreetMap εμφανίζεται στη θέση του καμβά μόνο στο βήμα 1 με πηγή «Χάρτης»
+function updateMapVisibility() {
+  const want = s.step === 'image' && sourceMode === 'map';
+  showMap(want && mapAvailable());
+  if (want && !mapAvailable()) setInfo('mapInfo', 'Ο χάρτης δεν φόρτωσε (χρειάζεται σύνδεση στο Internet για τη βιβλιοθήκη Leaflet).');
+}
+
+function setSourceMode(mode) {
+  sourceMode = mode;
+  document.querySelectorAll('#sourceMode button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  $('srcMap').classList.toggle('hidden', mode !== 'map');
+  $('srcImage').classList.toggle('hidden', mode !== 'image');
+  updateMapVisibility();
 }
 
 function setTool(t) {
@@ -114,17 +133,30 @@ const TOOLS = {
 
 // ---------- κλίμακα ----------
 function updateScale() {
+  if (s.fromMap) {                                  // η κλίμακα προκύπτει από τον χάρτη (γεωγραφικές συντεταγμένες), όχι από τα πεδία παρακάτω
+    s.srcMpp = s.grid.mpp;
+    setInfo('scaleInfo', `Κλίμακα από τον χάρτη: 1 pixel = ${s.srcMpp.toFixed(2)} m · η περιοχή καλύπτει ${(s.imgW * s.srcMpp).toFixed(0)} × ${(s.imgH * s.srcMpp).toFixed(0)} m`);
+    refreshLists();
+    redraw();
+    return;
+  }
   const mode = document.querySelector('input[name=scaleMode]:checked').value;
-  let mpp = null;
+  let mpp = null, msg = 'Η κλίμακα δεν έχει οριστεί.';
   if (mode === 'line') {
     const m = +$('refMeters').value;
     if (s.refLine && m > 0) { const len = Math.hypot(s.refLine[1][0] - s.refLine[0][0], s.refLine[1][1] - s.refLine[0][1]); if (len > 2) mpp = m / len; }
   } else {
-    const lat = +$('geoLat').value, zoom = +$('geoZoom').value;
-    if (isFinite(lat) && isFinite(zoom)) mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / 2 ** zoom;
+    // τα κενά πεδία δεν είναι 0: ο τύπος εφαρμόζεται μόνο όταν το πλάτος και το zoom είναι έγκυρα (το μήκος δεν επηρεάζει την κλίμακα)
+    const latS = $('geoLat').value.trim(), lonS = $('geoLon').value.trim(), zoomS = $('geoZoom').value.trim();
+    const lat = parseFloat(latS), lon = parseFloat(lonS), zoom = parseFloat(zoomS);
+    if (latS === '' || zoomS === '') msg = 'Συμπλήρωσε γεωγραφικό πλάτος και zoom.';
+    else if (!(Math.abs(lat) <= 85)) msg = 'Το γεωγραφικό πλάτος πρέπει να είναι από -85° έως 85°.';
+    else if (lonS !== '' && !(Math.abs(lon) <= 180)) msg = 'Το γεωγραφικό μήκος πρέπει να είναι από -180° έως 180°.';
+    else if (!(zoom >= 0 && zoom <= 24)) msg = 'Το zoom πρέπει να είναι από 0 έως 24.';
+    else mpp = 156543.03392 * Math.cos(lat * Math.PI / 180) / 2 ** zoom;
   }
   s.srcMpp = mpp;
-  setInfo('scaleInfo', mpp ? `1 pixel εικόνας = ${mpp.toFixed(3)} m · η εικόνα καλύπτει ${(s.imgW * mpp).toFixed(0)} × ${(s.imgH * mpp).toFixed(0)} m` : 'Η κλίμακα δεν έχει οριστεί.');
+  setInfo('scaleInfo', mpp ? `1 pixel εικόνας = ${mpp.toFixed(3)} m · η εικόνα καλύπτει ${(s.imgW * mpp).toFixed(0)} × ${(s.imgH * mpp).toFixed(0)} m` : msg);
   refreshLists();
   redraw();
 }
@@ -148,18 +180,19 @@ function refreshLabels() {
 
 function pushHistory() { s.history.push(s.labels.slice()); if (s.history.length > 30) s.history.shift(); }
 
+// Δίσκος διαμέτρου s.brushSize cells γύρω από το cell (cx, cy): μέγεθος 1 = ένα cell, 2 = σταυρός 5 cells, 3 = 3×3, κ.ο.κ.
 function paintDisc(cx, cy) {
-  const { w, h } = s.grid, r = s.brushSize;
-  for (let y = Math.max(0, cy - r); y <= Math.min(h - 1, cy + r); y++)
-    for (let x = Math.max(0, cx - r); x <= Math.min(w - 1, cx + r); x++)
-      if ((x - cx) ** 2 + (y - cy) ** 2 <= r * r) { const i = y * w + x; s.labels[i] = s.brushClass; s.labelsPix[i] = PALETTE[s.brushClass]; }
+  const { w, h } = s.grid, rad = s.brushSize / 2, ext = Math.ceil(rad);
+  for (let y = Math.max(0, cy - ext); y <= Math.min(h - 1, cy + ext); y++)
+    for (let x = Math.max(0, cx - ext); x <= Math.min(w - 1, cx + ext); x++)
+      if ((x - cx) ** 2 + (y - cy) ** 2 <= rad * rad) { const i = y * w + x; s.labels[i] = s.brushClass; s.labelsPix[i] = PALETTE[s.brushClass]; }
 }
 
 function paintAt(p) {
   const g = s.grid;
   const cx = Math.floor((p[0] - g.x0) * g.f), cy = Math.floor((p[1] - g.y0) * g.f);
   s.brushCursor = p;
-  const last = s.lastCell || [cx, cy], steps = Math.max(1, Math.ceil(Math.hypot(cx - last[0], cy - last[1]) / Math.max(1, s.brushSize / 2)));
+  const last = s.lastCell || [cx, cy], steps = Math.max(1, Math.ceil(Math.hypot(cx - last[0], cy - last[1]) / Math.max(1, s.brushSize / 4)));
   for (let k = 1; k <= steps; k++) paintDisc(Math.round(last[0] + (cx - last[0]) * k / steps), Math.round(last[1] + (cy - last[1]) * k / steps));
   s.lastCell = [cx, cy];
   s.labelsCtx.putImageData(s.labelsData, 0, 0);
@@ -181,7 +214,7 @@ async function loadFile(file) {
     const up = await upload(file);
     if (up.width !== img.naturalWidth || up.height !== img.naturalHeight) throw new Error('Οι διαστάσεις της εικόνας διαφέρουν από αυτές του server (EXIF περιστροφή;)');
     resetSim();
-    Object.assign(s, { id: up.id, img, imgW: up.width, imgH: up.height, refLine: null, srcMpp: null, region: [], spawn: [], exits: [], grid: null, labels: null, hmImg: null, built: false, groundSample: null, view: 'image' });
+    Object.assign(s, { id: up.id, img, imgW: up.width, imgH: up.height, fromMap: false, refLine: null, srcMpp: null, region: [], spawn: [], exits: [], grid: null, labels: null, hmImg: null, built: false, groundSample: null, view: 'image' });
     setInfo('imageInfo', `${file.name} · ${up.width} × ${up.height} px`);
     updateScale();
     vp.fit(up.width, up.height);
@@ -191,7 +224,49 @@ async function loadFile(file) {
   }
 }
 
+// Εισαγωγή από OpenStreetMap: το backend επιστρέφει έτοιμο χάρτη κλάσεων, περίγραμμα και προτάσεις εξόδων για το πολύγωνο του χάρτη
+async function importOsm() {
+  const poly = getPolygon();
+  if (!poly) return setInfo('mapInfo', 'Σχεδίασε πρώτα την περιοχή στον χάρτη.');
+  $('mapImport').disabled = true;
+  setInfo('mapInfo', 'Λήψη δεδομένων από το OpenStreetMap… (αν οι server είναι φορτωμένοι μπορεί να πάρει λίγα λεπτά)');
+  try {
+    const r = await post('/api/osm', { polygon: poly, target_mpp: +$('mapMpp').value });
+    resetSim();
+    const g = r.grid, base = document.createElement('canvas');
+    base.width = g.w; base.height = g.h;
+    Object.assign(s, { id: r.id, img: base, imgW: g.w, imgH: g.h, fromMap: true, refLine: null, srcMpp: g.mpp,
+      region: [{ mode: 'add', points: r.region }], spawn: [], exits: r.exits.map(e => ({ p1: e.p1, p2: e.p2, thickness_m: e.thickness_m })),
+      hmImg: null, built: false, groundSample: null, view: 'labels' });
+    const labels = fromB64(r.labels);
+    initLabels(g, labels);
+    paintBase(base, labels);
+    updateScale();
+    refreshLists();
+    vp.fit(g.w, g.h);
+    const c = r.counts;
+    const msg = `Βρέθηκαν ${c.buildings} κτίρια, ${c.roads} δρόμοι, ${c.gates} πύλες· προτάθηκαν ${r.exits.length} έξοδοι.` + (r.warnings.length ? ' ' + r.warnings.join(' ') : '');
+    setInfo('mapInfo', msg);
+    setInfo('proposeInfo', msg + ' Διόρθωσε με το πινέλο όπου χρειάζεται.');
+    setView('labels');
+    setStep('analyze');
+  } catch (e) {
+    setInfo('mapInfo', 'Σφάλμα: ' + (e.message || e));
+  } finally {
+    $('mapImport').disabled = !getPolygon();
+  }
+}
+
+// Βασική «εικόνα» του project από τον χάρτη κλάσεων (στη λειτουργία χάρτη δεν υπάρχει εικόνα): έδαφος, δρόμοι, κτίρια, τοίχοι
+function paintBase(canvas, labels) {
+  const x = canvas.getContext('2d'), d = x.createImageData(canvas.width, canvas.height), px = new Uint32Array(d.data.buffer);
+  const col = [pack(27, 29, 34, 255), pack(205, 182, 138, 255), pack(232, 232, 232, 255), pack(176, 120, 74, 255), pack(58, 42, 28, 255)];
+  for (let i = 0; i < labels.length; i++) px[i] = col[labels[i]] ?? 0;
+  x.putImageData(d, 0, 0);
+}
+
 async function runPropose() {
+  if (s.fromMap) return setInfo('proposeInfo', 'Στη λειτουργία χάρτη τα κτίρια και οι δρόμοι προέρχονται από το OpenStreetMap· διόρθωσέ τα με το πινέλο.');
   if (!s.id) return setInfo('proposeInfo', 'Ανέβασε πρώτα εικόνα.');
   if (!s.srcMpp) return setInfo('proposeInfo', 'Όρισε πρώτα την κλίμακα (βήμα 2).');
   if (!s.region.some(r => r.mode === 'add')) return setInfo('proposeInfo', 'Όρισε πρώτα την περιοχή εγκατάστασης (βήμα 3).');
@@ -263,7 +338,7 @@ document.querySelectorAll('input[name=scaleMode]').forEach(r => r.addEventListen
   updateScale();
   setTool(STEP_TOOL.scale());
 }));
-['refMeters', 'geoLat', 'geoZoom'].forEach(id => $(id).addEventListener('input', updateScale));
+['refMeters', 'geoLat', 'geoLon', 'geoZoom'].forEach(id => $(id).addEventListener('input', updateScale));
 $('drawRef').addEventListener('click', () => setTool('ref'));
 
 $('regionMode').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
@@ -304,6 +379,21 @@ window.addEventListener('keydown', e => {
   else if (e.key === 'Backspace' && s.draft?.points.length) { s.draft.points.pop(); redraw(); }
 });
 
+// Συννεφάκια βοήθειας (?): position fixed ώστε να μην κόβονται από το scroll του πάνελ· πάνω από το εικονίδιο αν χωρά, αλλιώς κάτω
+document.querySelectorAll('.help').forEach(h => {
+  const place = () => {
+    const b = h.querySelector('.bubble'), r = h.getBoundingClientRect(), w = b.offsetWidth, ht = b.offsetHeight;
+    const left = Math.min(Math.max(8, r.left - 8), Math.max(8, innerWidth - w - 8));
+    const above = r.top - ht - 12 >= 8;
+    b.style.left = left + 'px';
+    b.style.top = (above ? r.top - ht - 10 : r.bottom + 10) + 'px';
+    b.classList.toggle('below', !above);
+    b.style.setProperty('--arrow-left', (r.left + r.width / 2 - left - 6) + 'px');
+  };
+  h.addEventListener('mouseenter', place);
+  h.addEventListener('focus', place);
+});
+
 // ---------- προσομοίωση ----------
 initSim(() => { redraw(); markDone(); });
 $('simRun').addEventListener('click', () => {
@@ -317,6 +407,32 @@ $('simSlider').addEventListener('input', e => userScrub(+e.target.value));
 $('simSpeed').addEventListener('change', e => setSpeed(+e.target.value));
 $('showCm').addEventListener('change', e => { s.showCm = e.target.checked; redraw(); });
 
-window.liveService = { s, vp, sim };       // για έλεγχο/αποσφαλμάτωση από την κονσόλα του browser
+// ---------- χάρτης OpenStreetMap ----------
+document.querySelectorAll('#sourceMode button').forEach(b => b.addEventListener('click', () => setSourceMode(b.dataset.mode)));
+$('mapDraw').addEventListener('click', startDraw);
+$('mapClear').addEventListener('click', clearPolygon);
+$('mapImport').addEventListener('click', importOsm);
+onPolygonChange(poly => { $('mapImport').disabled = !poly; });
+$('mapSearchForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const q = $('mapSearch').value.trim();
+  if (!q) return;
+  const list = $('mapResults');
+  list.innerHTML = '<li>Αναζήτηση…</li>';
+  try {
+    const places = await searchPlaces(q);
+    list.innerHTML = places.length ? '' : '<li>Δεν βρέθηκε τόπος.</li>';
+    places.forEach(p => {
+      const li = document.createElement('li');
+      li.textContent = p.name;
+      li.addEventListener('click', () => { goTo(p); list.innerHTML = ''; });
+      list.appendChild(li);
+    });
+  } catch (err) {
+    list.innerHTML = '<li>Σφάλμα αναζήτησης: ' + (err.message || err) + '</li>';
+  }
+});
+
+window.liveService = { s, vp, sim, getMap };       // για έλεγχο/αποσφαλμάτωση από την κονσόλα του browser
 refreshLists();
 setStep('image');

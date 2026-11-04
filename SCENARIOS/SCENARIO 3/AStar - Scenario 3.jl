@@ -516,15 +516,12 @@ path_planning_init_time[] += @elapsed begin
     end
 end
 
-# Κύρια εγγραφή: για κάθε frame κάνει βήμα προσομοίωσης, ελέγχει αλλαγή CM, ενημερώνει γραφικά και δεδομένα
+# Κύρια εγγραφή: για κάθε frame ελέγχει πρώτα αλλαγή CM (και επανασχεδιάζει), μετά κάνει βήμα προσομοίωσης, ενημερώνει γραφικά και δεδομένα
 record(fig, video_file, 1:T; framerate=30) do frame
     # update frame counter observable
     frame_obs[] = frame
 
-    # 1) step the model first (same order as DStarLite - Scenario 3.jl)
-    simulation_time[] += @elapsed step!(model, 1)
-
-    # 2) concentration map index for this frame
+    # 1) concentration map index for this frame
     global current_map_idx
     t_sim = (frame - 1) * dt                                    # τρέχων χρόνος προσομοίωσης (s)
     new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)          # τελευταίο CM του οποίου ο χρόνος ενεργοποίησης έχει περάσει
@@ -551,6 +548,11 @@ record(fig, video_file, 1:T; framerate=30) do frame
 
         println("Frame $frame: swapped to concentration map $current_map_idx and replanned paths.")
     end
+
+    # 2) step the model AFTER the CM check: the new CM is already active in the step that starts at
+    #    t = CM_SWITCH_TIMES[k] (same order in every scenario and benchmark)
+    # Το βήμα εκτελείται μετά τον έλεγχο εναλλαγής CM, ώστε το νέο CM να ισχύει ήδη στο βήμα που ξεκινά στο t = CM_SWITCH_TIMES[k] (ίδια σειρά σε όλα τα σενάρια και benchmarks).
+    simulation_time[] += @elapsed step!(model, 1)
 
     # Update concentration map visualization
     cm_obs[] = penalty_map      # ανανέωση των ισοϋψών του CM (σε κάθε frame)

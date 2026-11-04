@@ -33,12 +33,18 @@ function Agents.move_along_route!(
     dt::Real = 1.0,
 ) where {D}
     pathfinder.destination === nothing && return
+    T = typeof(agent.pos)
+    from = agent.pos
+    # With line of sight, do not overshoot the destination: land on it if it is within one step.
+    goal = _flow_los_goal(pathfinder, from)
+    if goal !== nothing && LinearAlgebra.norm(ntuple(i -> goal[i] - from[i], D)) <= speed * dt
+        move_agent!(agent, Agents.normalize_position(T(goal), model), model)
+        return
+    end
     dir = flow_at_continuous(pathfinder, agent.pos)
     if all(≈(0), dir)
         return
     end
-    T = typeof(agent.pos)
-    from = agent.pos
     desired = T(dir) .* speed
     next_pos = from .+ desired .* dt
     next_pos = Agents.normalize_position(T(next_pos), model)

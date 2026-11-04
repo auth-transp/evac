@@ -14,6 +14,7 @@ using Random            # τυχαία αναγνωριστικά project
 
 include("src/Heightmap.jl")
 include("src/Propose.jl")
+include("src/Osm.jl")
 
 const FRONTEND_DIR = joinpath(@__DIR__, "frontend")
 const DATA_DIR = joinpath(@__DIR__, "data")             # uploads και αποτελέσματα ανά project (δεν μπαίνει στο git)
@@ -115,6 +116,25 @@ function propose_route(req::HTTP.Request)
     labels = propose_labels(crop_to_grid(img, g), region, g;
         sensitivity = get(p, :sensitivity, 14.0), min_building_m = get(p, :min_building_m, 8.0), ground_sample = sample)
     return json_response(Dict("grid" => grid_json(g), "labels" => labels_to_b64(labels), "region_cells" => count(region)))
+end
+
+# POST /api/osm {polygon: [[lat, lon], ...], target_mpp}: νέο project από δεδομένα OpenStreetMap για την περιοχή που ορίστηκε στον χάρτη.
+# Το grid παίζει τον ρόλο της «εικόνας» (x0 = y0 = 0, f = 1)· επιστρέφει χάρτη κλάσεων, περίγραμμα περιοχής και προτάσεις εξόδων.
+function osm_route(req::HTTP.Request)
+    p = JSON3.read(String(body_bytes(req)))
+    polygon = [(Float64(q[1]), Float64(q[2])) for q in p.polygon]
+    length(polygon) >= 3 || error("όρισε την περιοχή στον χάρτη (τουλάχιστον 3 κορυφές)")
+    target = Float64(get(p, :target_mpp, DEFAULT_MPP))
+    osm_grid(polygon; target_mpp = target, max_side = MAX_GRID_SIDE)       # έλεγχος μεγέθους πριν το αίτημα δικτύου
+    margin = 0.0003                                                        # ~30 m: για να πιάνονται δρόμοι που τέμνουν το όριο
+    lats, lons = first.(polygon), last.(polygon)
+    j = fetch_overpass(overpass_query(minimum(lats) - margin, minimum(lons) - margin, maximum(lats) + margin, maximum(lons) + margin))
+    r = build_from_osm(polygon, get(j, :elements, []); target_mpp = target, max_side = MAX_GRID_SIDE)
+    id = randstring("0123456789abcdef", 12)
+    mkpath(project_dir(id))
+    return json_response(Dict("id" => id, "grid" => grid_json(r.grid), "labels" => labels_to_b64(r.labels), "region" => r.region,
+        "exits" => r.exits, "counts" => r.counts, "warnings" => r.warnings,
+        "attribution" => "© OpenStreetMap contributors"))
 end
 
 # POST /api/build: τελικό heightmap από τα (διορθωμένα) labels, τις εξόδους και τις ζώνες spawn
@@ -275,6 +295,7 @@ end
 @post "/api/upload" req -> guarded(upload_route, req)
 @post "/api/propose" req -> guarded(propose_route, req)
 @post "/api/build" req -> guarded(build_route, req)
+@post "/api/osm" req -> guarded(osm_route, req)
 @post "/api/run" req -> guarded(run_route, req)
 @get "/api/jobs/{id}" function(req::HTTP.Request, id::String)
     return guarded(job_status_route, id)

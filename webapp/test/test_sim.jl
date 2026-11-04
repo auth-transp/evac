@@ -61,6 +61,7 @@ end
     @test res.status == "done" && res.n_agents == 20
     meta = JSON3.read(read(joinpath(dir, "meta.json"), String))
     @test meta.stride == 4 && meta.rows == br.config.rows && meta.cols == br.config.cols
+    @test meta.goal_radius_m == 5.0 && meta.goal_radius ≈ 5.0 / meta.meters_per_pixel      # ακτίνα διαφυγής 5 m
     @test filesize(joinpath(dir, "frames.bin")) == T * 20 * 4 * 4              # frames × agents × 4 Float32
     fr = reinterpret(Float32, read(joinpath(dir, "frames.bin")))
     @test all(isfinite, fr)

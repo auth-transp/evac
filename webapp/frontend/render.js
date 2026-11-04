@@ -79,7 +79,7 @@ export function render(canvas, vp, s) {
 
   // δείκτης πινέλου
   if (s.brushCursor && s.tool === 'brush' && s.grid) {
-    ctx.beginPath(); ctx.arc(s.brushCursor[0], s.brushCursor[1], s.brushSize / s.grid.f, 0, 7);
+    ctx.beginPath(); ctx.arc(s.brushCursor[0], s.brushCursor[1], Math.max(s.brushSize / 2 / s.grid.f, px), 0, 7);   // μέγεθος = διάμετρος σε cells
     ctx.strokeStyle = '#fff'; ctx.lineWidth = px; ctx.stroke();
   }
 }

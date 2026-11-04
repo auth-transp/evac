@@ -287,22 +287,25 @@ function choose_best_path(paths::Vector{Vector{Tuple{Int,Int}}})
 end
 
 # --- Benchmark parameters ---
+const BENCHMARK_SCENARIO = "SCENARIO 3"                                                             # σενάριο (φάκελος) του benchmark: στο όνομα και στη θέση του αρχείου Excel και στο Summary
 const BENCHMARK_ALGORITHM = "DStarLite"                                                             # όνομα αλγορίθμου (στις παραμέτρους του Summary και στο όνομα του αρχείου Excel)
-const BENCHMARK_MAX_RUNS = 100                                                                      # μέγιστος αριθμός runs ανά πλήθος agents
-const BENCHMARK_AGENT_COUNTS = [5, 10, 25, 50, 75, 100]   # one Excel sheet per count  # πλήθη agents που δοκιμάζονται (ένα φύλλο Excel για κάθε πλήθος)
+const BENCHMARK_DESCRIPTION = "D* Lite on AbsolutePenaltyMap = heightmap + current CM; incremental planner update on each CM switch"  # σύντομη περιγραφή του σεναρίου (γράφεται στο Summary)
+const BENCHMARK_MAX_RUNS = 100                                                                      # αριθμός runs ανά πλήθος agents
+const BENCHMARK_AGENT_COUNTS = [5, 10, 25, 50, 75, 100]                                             # πλήθη agents που δοκιμάζονται (ένα φύλλο Excel για κάθε πλήθος)
 const BENCHMARK_TL_CAP_PER_AGENT = 3.0                                                              # άνω όριο TL ανά agent για το άθροισμα SumTL_capped
-const TL_INCAPACITATED = 3.0          # TL at which speed drops to 0 (see agent_step!)  # TL από το οποίο ο agent θεωρείται ανίκανος (ταχύτητα 0, βλ. agent_step!)
-const PROJECTION_MAX_STEPS = 10800    # max extra (untimed) steps (3 h) to resolve stranded agents after T  # μέγιστα επιπλέον βήματα της προβολής (3 ώρες, χωρίς χρονομέτρηση) για την επίλυση των stranded agents μετά το T
+const TL_INCAPACITATED = 3.0                                                                        # TL από το οποίο ο agent θεωρείται ανίκανος (ταχύτητα 0, βλ. agent_step!)
+const PROJECTION_MAX_STEPS = 10800                                                                  # μέγιστα επιπλέον βήματα της προβολής (3 ώρες, χωρίς χρονομέτρηση) για την επίλυση των stranded agents μετά το T
+const BENCHMARK_EXTRA_CONFIG = Tuple{String,Any}[]                                                  # επιπλέον παράμετροι του σεναρίου για το Summary (καμία σε αυτό το σενάριο)
 
 # Horizon T = 2500 s and CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at 70% of T.
-# t = (step_idx - 1) * dt
+# t = (step_idx - 1) * dt. The CM of each switch time is applied BEFORE the step that starts at that time (same in every benchmark).
 const BENCHMARK_T_STEPS = 2500                                                                      # ορίζοντας T σε βήματα (2500 s με dt = 1)
 const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]                          # χρόνοι (s) στους οποίους ενεργοποιείται κάθε CM (CM1..CM7)
 @assert length(CM_SWITCH_TIMES) == NUM_CMS "CM_SWITCH_TIMES must have one entry per concentration map"  # έλεγχος ότι υπάρχει χρόνος εναλλαγής για κάθε CM
 
 # Warm-up run (JIT compilation) — its results are discarded. It only needs to reach the
-# first CM switch so that the replanning code path is compiled too.
-# Το warm-up τρέχει μέχρι την πρώτη αλλαγή CM ώστε να γίνει JIT compilation και του κώδικα επανασχεδιασμού (τα αποτελέσματά του απορρίπτονται).
+# first CM switch so that the CM-switch (and replanning) code path is compiled too.
+# Το warm-up τρέχει μέχρι λίγο μετά την πρώτη αλλαγή CM ώστε να γίνει JIT compilation και του κώδικα της εναλλαγής CM / του επανασχεδιασμού (τα αποτελέσματά του απορρίπτονται).
 const WARMUP_T_STEPS = Int(CM_SWITCH_TIMES[2] / dt) + 2                                             # βήματα του warm-up: μέχρι λίγο μετά την 1η εναλλαγή CM
 
 # Ένα πλήρες benchmark run: νέο μοντέλο με τυχαίο seed και num_agents agents, χρονομέτρηση του αρχικού σχεδιασμού διαδρομών, t_steps βήματα με εναλλαγή των CM1..CM7 και επανασχεδιασμός σε κάθε εναλλαγή. Χρονομετρούνται χωριστά ο αρχικός σχεδιασμός, ο επανασχεδιασμός και η προσομοίωση. Επιστρέφει τις μετρικές του run και τις γραμμές ανά agent.
@@ -406,9 +409,7 @@ function run_one_benchmark(; num_agents::Int, t_steps::Int = BENCHMARK_T_STEPS, 
     evac_t = Dict{Int,Float64}()                                                                    # χρόνος διαφυγής ανά agent id
     tl3_t = Dict{Int,Float64}()                                                                     # χρόνος που ο agent έφτασε TL >= TL_INCAPACITATED, ανά agent id
 
-    for step_idx in 1:t_steps                                                                       # κύριος βρόχος προσομοίωσης: σε κάθε βήμα χρονομετρείται η προσομοίωση και ελέγχεται αν πρέπει να αλλάξει το CM
-        sim_step_time += @elapsed step!(model_run, 1)                                               # ένα βήμα του μοντέλου (χρονομετρείται με @elapsed)
-        track_outcomes!(evac_t, tl3_t, model_run, step_idx * dt)                                    # καταγραφή διαφυγών/ανικανοτήτων (εκτός χρονομέτρησης)
+    for step_idx in 1:t_steps                                                                       # κύριος βρόχος προσομοίωσης: σε κάθε βήμα ελέγχεται πρώτα αν πρέπει να αλλάξει το CM και έπειτα εκτελείται (και χρονομετρείται) το βήμα
         t_sim = (step_idx - 1) * dt                                                                 # χρόνος προσομοίωσης (s) στην αρχή αυτού του βήματος
         new_idx = searchsortedlast(CM_SWITCH_TIMES, t_sim)                                          # δείκτης του τελευταίου CM του οποίου ο χρόνος εναλλαγής έχει παρέλθει
         if new_idx != current_map_idx                                                               # αν άλλαξε το CM χρειάζεται επανασχεδιασμός
@@ -440,6 +441,9 @@ function run_one_benchmark(; num_agents::Int, t_steps::Int = BENCHMARK_T_STEPS, 
             pf_bytes += tm_replan.bytes                                                             # συσσώρευση allocations
             pf_gc += tm_replan.gctime                                                               # συσσώρευση χρόνου GC
         end
+        # Το βήμα εκτελείται μετά τον έλεγχο εναλλαγής CM: το νέο CM ισχύει ήδη στο βήμα που ξεκινά στο t = CM_SWITCH_TIMES[k], την ίδια στιγμή σε όλα τα benchmarks.
+        sim_step_time += @elapsed step!(model_run, 1)                                               # ένα βήμα του μοντέλου (χρονομετρείται με @elapsed)
+        track_outcomes!(evac_t, tl3_t, model_run, step_idx * dt)                                    # καταγραφή διαφυγών/ανικανοτήτων (εκτός χρονομέτρησης)
     end
 
     route_of = a -> a.path                                                                          # συνάρτηση που επιστρέφει τα εναπομείναντα waypoints του agent (στον D* Lite είναι το πεδίο path του agent)
@@ -622,6 +626,7 @@ function write_benchmark_xlsx(path, algorithm, results)
             stats = Dict{Symbol,Any}()                                                              # στατιστικά ανά μετρική αυτού του πλήθους agents
             for (ci, k) in enumerate(ks)                                                            # για κάθε στήλη μετρικής
                 k in (:Run, :Seed) && continue                                                      # δεν υπολογίζονται στατιστικά για τις στήλες Run και Seed
+                all(x -> ismissing(x) || x isa Real, cols[ci]) || continue                          # ούτε για στήλες με μη αριθμητικές τιμές (π.χ. κείμενο, όπως οι έξοδοι στο Σενάριο 4)
                 st = column_stats(cols[ci])                                                         # στατιστικά της στήλης
                 stats[k] = st                                                                       # αποθήκευση για το Summary
                 for si in eachindex(STAT_NAMES)                                                     # για κάθε στατιστικό
@@ -639,8 +644,10 @@ function write_benchmark_xlsx(path, algorithm, results)
         end
         XLSX.writetable!(summary, s_cols, s_names)                                                  # γράφει τον πίνακα του Summary
 
-        config = [                                                                                  # παράμετροι της εκτέλεσης που καταγράφονται κάτω από τον πίνακα του Summary
+        config = Tuple{String,Any}[                                                                 # παράμετροι της εκτέλεσης που καταγράφονται κάτω από τον πίνακα του Summary
+            ("Scenario", BENCHMARK_SCENARIO),
             ("Algorithm", algorithm),
+            ("Description", BENCHMARK_DESCRIPTION),
             ("Runs per agent count", BENCHMARK_MAX_RUNS),
             ("Horizon T (steps)", BENCHMARK_T_STEPS),
             ("dt (s)", dt),
@@ -649,7 +656,9 @@ function write_benchmark_xlsx(path, algorithm, results)
             ("Incapacitation threshold (TL)", TL_INCAPACITATED),
             ("Projection after T", "last CM kept, no replanning, not timed, max $PROJECTION_MAX_STEPS steps"),
             ("Seeds", "random per run (RandomDevice)"),
+            ("CM switch timing", "applied before the step that starts at each switch time"),
         ]
+        append!(config, BENCHMARK_EXTRA_CONFIG)                                                     # επιπλέον παράμετροι του σεναρίου (π.χ. οι συνδυασμοί εξόδων στο Σενάριο 4)
         c0 = length(results) + 3                                                                    # πρώτη γραμμή του μπλοκ παραμέτρων (μετά από μία κενή γραμμή)
         for (i, (label, value)) in enumerate(config)                                                # για κάθε παράμετρο
             summary[c0 + i - 1, 1] = label                                                          # όνομα παραμέτρου
@@ -693,9 +702,9 @@ end
 
 # Εκτέλεση του benchmark: warm-up και έπειτα runs για κάθε πλήθος agents, με εγγραφή του Excel μετά από κάθε πλήθος.
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")                                    # χρονική σήμανση της εκτέλεσης
-xlsx_path = "SCENARIOS/SCENARIO 3/Simulation Results/$(BENCHMARK_ALGORITHM) Benchmarking_$(run_timestamp).xlsx"  # διαδρομή του αρχείου Excel εξόδου
+xlsx_path = "SCENARIOS/$(BENCHMARK_SCENARIO)/Simulation Results/$(BENCHMARK_ALGORITHM) Benchmarking_$(run_timestamp).xlsx"  # διαδρομή του αρχείου Excel εξόδου
 
-println("Benchmark: Scenario 3 with $BENCHMARK_ALGORITHM. Agent counts = $BENCHMARK_AGENT_COUNTS, runs per count = $BENCHMARK_MAX_RUNS.")  # μήνυμα έναρξης του benchmark
+println("Benchmark: $(BENCHMARK_SCENARIO) with $BENCHMARK_ALGORITHM ($BENCHMARK_DESCRIPTION). Agent counts = $BENCHMARK_AGENT_COUNTS, runs per count = $BENCHMARK_MAX_RUNS.")  # μήνυμα έναρξης του benchmark
 
 # Warm-up (JIT compilation): executed once, results discarded — not part of the exported statistics.
 println("  Warm-up run ($WARMUP_T_STEPS steps, excluded from results)...")                          # μήνυμα warm-up

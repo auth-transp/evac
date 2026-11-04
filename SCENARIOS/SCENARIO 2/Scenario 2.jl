@@ -36,11 +36,18 @@ end
 end
 
     
-begin   # Heightmap για χώρο / A* · CM1..CM7 μόνο για TL και οπτικό overlay (και NPM στο pathfinding)
+begin   # Heightmap για χώρο / A* · σταθερό CM4 μόνο για το κόστος του pathfinding · CM1..CM7 μόνο για TL και οπτικό overlay
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")  # φόρτωση της εικόνας του χάρτη
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]  # μετατροπή σε πίνακα (γραμμές, στήλες) και κράτημα του 1ου καναλιού
     global heightmap = floor.(Int, convert.(Float64, heightmap_data) * 255)  # κλιμάκωση σε ακέραιες τιμές 0..255
     heightmap = 255 .- heightmap  # αντιστροφή: το μαύρο της εικόνας γίνεται υψηλή τιμή (λευκό στο αντεστραμμένο heightmap, μη βατό στο walkmap) και το λευκό γίνεται 0
+
+    # Fixed map for pathfinding cost: CM4 (Thesis, Scenario 2). It never changes and does NOT affect the TL.
+    pf_map_data = load("Concentration Maps/4.bmp")  # φόρτωση του concentration map CM4, που χρησιμοποιείται σταθερά για το κόστος του pathfinding
+    pf_map_data = permutedims(channelview(pf_map_data), [2,3,1])[:,:,1]  # μετατροπή σε πίνακα (γραμμές, στήλες) και κράτημα του 1ου καναλιού
+    global penalty_map = floor.(Int, convert.(Float64, pf_map_data) * 255.0)  # κλιμάκωση σε ακέραιες τιμές 0..255 (μόνο για το pathfinding)
+
+    # Dynamic maps for TL accumulation only: CM1..CM7
 
     const NUM_CMS = 7  # πλήθος concentration maps (CM1..CM7)
     global cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)  # λίστα που κρατά τους 7 χάρτες συγκέντρωσης
@@ -51,9 +58,11 @@ begin   # Heightmap για χώρο / A* · CM1..CM7 μόνο για TL και �
         cm_list[k] = convert.(Float64, img) .* 255.0  # κλιμάκωση τιμών στο 0..255 (Float64)
         @assert size(cm_list[k]) == size(heightmap) "Concentration map $k size mismatch with heightmap"  # έλεγχος ότι το CM έχει τις ίδιες διαστάσεις με το heightmap
     end
-    global tl_penalty_map = copy(cm_list[1])  # ενεργός χάρτης συγκέντρωσης για το τοξικό φορτίο (TL), αρχικά το CM1
-    global NPM = heightmap .+ tl_penalty_map  # χάρτης κόστους για το pathfinding = ανάγλυφο/εμπόδια (heightmap) + τρέχον CM
+    global tl_penalty_map = copy(cm_list[1])  # ενεργός χάρτης συγκέντρωσης για το τοξικό φορτίο (TL), αρχικά το CM1· εναλλάσσεται CM1→CM7 και επηρεάζει μόνο το TL
+    @assert size(penalty_map) == size(heightmap) "penalty_map dimensions $(size(penalty_map)) do not match heightmap dimensions $(size(heightmap))"  # έλεγχος ότι το CM4 έχει τις ίδιες διαστάσεις με το heightmap
 end
+
+NPM = heightmap .+ penalty_map  # χάρτης κόστους pathfinding = heightmap + CM4 (σταθερός, ακέραιος)
 
 begin   # Αρχικοποίηση των παραμέτρων του μοντέλου
     # Time–speed correlation: distance per step = speed × dt (in space units).
@@ -364,7 +373,6 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
     @assert length(cm_switch_times) == NUM_CMS  # έλεγχος ότι υπάρχει χρόνος αλλαγής για κάθε CM
     tl_map_idx = Ref(1)  # δείκτης του CM που ισχύει αυτή τη στιγμή (ξεκινά από το 1)
     tl_penalty_map .= cm_list[tl_map_idx[]]  # φόρτωση του CM1 στον ενεργό χάρτη TL (επί τόπου)
-    NPM .= heightmap .+ tl_penalty_map  # ενημέρωση του NPM επί τόπου με το ενεργό CM
 
     # -- Στήσιμο Figure & Axis --
     fig = Figure(; size = (800,800))  # δημιουργία του Figure
@@ -462,8 +470,7 @@ begin   # Δημιουργία animation με trails & συλλογή CSV θέσ
         new_idx = searchsortedlast(cm_switch_times, t_sim)  # δείκτης του τελευταίου CM με χρόνο έναρξης <= t_sim
         if new_idx != tl_map_idx[]  # αλλαγή CM μόνο όταν αλλάζει ο δείκτης
             tl_map_idx[] = new_idx  # αποθήκευση του νέου δείκτη
-            tl_penalty_map .= cm_list[new_idx]  # αντικατάσταση του ενεργού χάρτη TL (τον διαβάζει η agent_step!)
-            NPM .= heightmap .+ tl_penalty_map  # ενημέρωση του NPM επί τόπου με το νέο CM
+            tl_penalty_map .= cm_list[new_idx]  # αντικατάσταση του ενεργού χάρτη TL (τον διαβάζει η agent_step!)· ο χάρτης του pathfinder (CM4) δεν αλλάζει
         end
         cm_obs[] = tl_penalty_map  # ανανέωση του contour overlay
         # 2) βήμα προσομοίωσης

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Live Service</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -22,13 +23,37 @@
 <aside id="steps">
 
   <section class="step active" data-step="image">
-    <h2><span class="n">1</span> Εικόνα</h2>
+    <h2><span class="n">1</span> Τοποθεσία</h2>
     <div class="body">
-      <label class="drop" id="drop">
-        <input type="file" id="file" accept="image/png,image/jpeg,image/bmp,image/tiff">
-        <span>Επίλεξε ή σύρε εδώ μια δορυφορική εικόνα (png, jpg, bmp)</span>
-      </label>
-      <p class="info" id="imageInfo"></p>
+      <div class="seg" id="sourceMode">
+        <button data-mode="map" class="active">Χάρτης OpenStreetMap</button>
+        <button data-mode="image">Εικόνα</button>
+      </div>
+
+      <div id="srcMap">
+        <p class="hint">Βρες την εγκατάσταση στον χάρτη, σχεδίασε το περίγραμμά της και εισήγαγε τα κτίρια, τους δρόμους και τις πύλες από το OpenStreetMap. Το δορυφορικό στρώμα δεν περιλαμβάνεται.</p>
+        <form class="row search" id="mapSearchForm">
+          <input type="search" id="mapSearch" placeholder="Αναζήτηση τόπου, π.χ. Ras Laffan">
+          <button type="submit">Αναζήτηση</button>
+        </form>
+        <ul class="list" id="mapResults"></ul>
+        <div class="row">
+          <button id="mapDraw">Σχεδίαση περιοχής</button>
+          <button id="mapClear">Καθαρισμός</button>
+        </div>
+        <label class="field">Ανάλυση grid (m/pixel) <input type="number" id="mapMpp" min="0.5" step="0.1" value="3.46"></label>
+        <button id="mapImport" class="primary" disabled>Εισαγωγή από OpenStreetMap</button>
+        <p class="info" id="mapInfo"></p>
+        <p class="hint">Η ποιότητα του OpenStreetMap διαφέρει ανά περιοχή· ό,τι λείπει το συμπληρώνεις με το πινέλο. Δεδομένα © OpenStreetMap contributors.</p>
+      </div>
+
+      <div id="srcImage" class="hidden">
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="image/png,image/jpeg,image/bmp,image/tiff">
+          <span>Επίλεξε ή σύρε εδώ μια δορυφορική εικόνα (png, jpg, bmp)</span>
+        </label>
+        <p class="info" id="imageInfo"></p>
+      </div>
     </div>
   </section>
 
@@ -45,8 +70,24 @@
       <label class="radio"><input type="radio" name="scaleMode" value="geo"> Γεωγραφικό πλάτος και zoom</label>
       <div class="sub-body hidden" id="scaleGeo">
         <p class="hint">Για screenshot χάρτη (Google, Bing) στο αρχικό μέγεθος, 256 px ανά tile: m/pixel = 156543.03·cos(lat)/2^zoom.</p>
-        <label class="field">Γεωγραφικό πλάτος (°) <input type="number" id="geoLat" step="any" value="25.9"></label>
-        <label class="field">Zoom <input type="number" id="geoZoom" step="any" value="17"></label>
+        <label class="field">Γεωγραφικό πλάτος (°) <input type="number" id="geoLat" step="any" min="-85" max="85" placeholder="π.χ. 25.9"></label>
+        <label class="field">Γεωγραφικό μήκος (°) <input type="number" id="geoLon" step="any" min="-180" max="180" placeholder="π.χ. 50.5"></label>
+        <div class="field">
+          <span class="lbl">
+            <label for="geoZoom">Zoom</label>
+            <span class="help" tabindex="0" role="button" aria-label="Πού βρίσκω το zoom;">?
+              <span class="bubble" role="tooltip">
+                Το zoom φαίνεται στη διεύθυνση (URL) του χάρτη από τον οποίο πήρες το screenshot:
+                <b>Google Maps</b>: <code>…/@25.9,50.5,<u>17</u>z</code> (πλάτος, μήκος, zoom)·
+                <b>Bing Maps</b>: <code>lvl=<u>17</u></code>·
+                <b>OpenStreetMap</b>: <code>#map=<u>17</u>/25.9/50.5</code>.
+                Το ίδιο URL δίνει και το γεωγραφικό πλάτος και μήκος.
+                Το screenshot πρέπει να είναι χωρίς μεγέθυνση του browser ή της οθόνης.
+              </span>
+            </span>
+          </span>
+          <input type="number" id="geoZoom" step="any" min="0" max="24" placeholder="π.χ. 17">
+        </div>
       </div>
       <p class="info" id="scaleInfo">Η κλίμακα δεν έχει οριστεί.</p>
     </div>
@@ -83,7 +124,7 @@
         <button data-class="4"><i style="background:#262626"></i>Τοίχος</button>
         <button data-class="0"><i style="background:#7a7a7a"></i>Εκτός</button>
       </div>
-      <label class="field">Μέγεθος πινέλου <input type="range" id="brushSize" min="1" max="20" value="3"><output id="brushOut">3</output></label>
+      <label class="field" title="Διάμετρος σε cells του grid (1 cell = η ανάλυση του grid)">Μέγεθος πινέλου (cells) <input type="range" id="brushSize" min="1" max="40" value="3"><output id="brushOut">3</output></label>
       <div class="row">
         <button id="brushTool">Πινέλο</button>
         <button id="undoLabels">Αναίρεση</button>
@@ -152,6 +193,7 @@
 </aside>
 
 <div id="stage">
+  <div id="map"></div>
   <canvas id="canvas"></canvas>
   <div id="hud"></div>
   <div id="simbar" class="hidden">
@@ -165,6 +207,7 @@
   <div class="legend">Τροχός: zoom · Δεξί ή μεσαίο κουμπί/Space: μετακίνηση</div>
 </div>
 </main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script type="module" src="/static/app.js"></script>
 </body>
 </html>

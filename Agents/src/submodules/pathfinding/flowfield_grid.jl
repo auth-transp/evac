@@ -34,13 +34,13 @@ function Agents.move_along_route!(
     d_cur = pathfinder.distance_grid[cur...]
     isinf(d_cur) && return
     d_cur == 0.0 && return  # at destination
-    # Choose walkable neighbor with smallest distance
+    # Choose the walkable neighbor on a shortest path (smallest distance + step cost)
     best = cur
-    best_d = d_cur
-    for nbor in get_neighbors(cur, pathfinder)
-        all(1 .<= nbor .<= size(pathfinder.walkmap)) || continue
-        pathfinder.walkmap[nbor...] || continue
-        d_n = pathfinder.distance_grid[nbor...]
+    best_d = Inf
+    for β in pathfinder.neighborhood
+        nbor = _flow_neighbor(cur, β, pathfinder)
+        nbor === nothing && continue
+        d_n = pathfinder.distance_grid[nbor...] + _flow_edge_cost(pathfinder, cur, nbor, β)
         if d_n < best_d
             best_d = d_n
             best = nbor
