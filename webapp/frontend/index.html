@@ -3,14 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Live Service</title>
+<title>Live Service – Προσομοίωση εκκένωσης από χάρτη OpenStreetMap</title>
+<meta name="description" content="Δημιούργησε heightmap εκκένωσης από δεδομένα OpenStreetMap και τρέξε προσομοίωση πεζών με D* Lite, Social Force Model και τοξικό φορτίο, με ζωντανή αναπαραγωγή και αποτελέσματα.">
+<meta name="theme-color" content="#1f6feb">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="/static/favicon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/site.webmanifest">
+<!-- TODO: τα og:url και og:image χρειάζονται απόλυτο URL· αντικατάστησε το https://example.com με το πραγματικό domain όταν οριστεί -->
+<meta property="og:type" content="website">
+<meta property="og:locale" content="el_GR">
+<meta property="og:site_name" content="Live Service">
+<meta property="og:title" content="Live Service – Προσομοίωση εκκένωσης">
+<meta property="og:description" content="Από τον χάρτη OpenStreetMap σε heightmap και προσομοίωση εκκένωσης πεζών με D* Lite και Social Force Model.">
+<meta property="og:url" content="https://example.com/">
+<meta property="og:image" content="https://example.com/static/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Εικονίδιο του Live Service: κτίρια, δρόμος και βέλος εξόδου">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<noscript><p class="noscript">Το Live Service χρειάζεται JavaScript. Ενεργοποίησέ το στον browser σου και φόρτωσε ξανά τη σελίδα.</p></noscript>
 <header>
   <h1>Live Service</h1>
-  <span class="sub">Δημιουργία heightmap εκκένωσης από δορυφορική εικόνα</span>
+  <span class="sub">Δημιουργία heightmap εκκένωσης από δεδομένα OpenStreetMap</span>
   <div class="spacer"></div>
   <div class="viewtoggle" id="viewToggle">
     <button data-view="image" class="active">Εικόνα</button>
@@ -25,76 +45,24 @@
   <section class="step active" data-step="image">
     <h2><span class="n">1</span> Τοποθεσία</h2>
     <div class="body">
-      <div class="seg" id="sourceMode">
-        <button data-mode="map" class="active">Χάρτης OpenStreetMap</button>
-        <button data-mode="image">Εικόνα</button>
+      <p class="hint">Βρες την εγκατάσταση στον χάρτη, σχεδίασε το περίγραμμά της και εισήγαγε τα κτίρια, τους δρόμους και τις πύλες από το OpenStreetMap. Η ανάλυση του grid (1–3.46 m/pixel) επιλέγεται αυτόματα από το μέγεθος της περιοχής και η κλίμακα προκύπτει από τις γεωγραφικές συντεταγμένες.</p>
+      <form class="row search" id="mapSearchForm">
+        <input type="search" id="mapSearch" placeholder="Αναζήτηση τόπου, π.χ. Ras Laffan">
+        <button type="submit">Αναζήτηση</button>
+      </form>
+      <ul class="list" id="mapResults"></ul>
+      <div class="row">
+        <button id="mapDraw">Σχεδίαση περιοχής</button>
+        <button id="mapClear">Καθαρισμός</button>
       </div>
-
-      <div id="srcMap">
-        <p class="hint">Βρες την εγκατάσταση στον χάρτη, σχεδίασε το περίγραμμά της και εισήγαγε τα κτίρια, τους δρόμους και τις πύλες από το OpenStreetMap. Το δορυφορικό στρώμα δεν περιλαμβάνεται.</p>
-        <form class="row search" id="mapSearchForm">
-          <input type="search" id="mapSearch" placeholder="Αναζήτηση τόπου, π.χ. Ras Laffan">
-          <button type="submit">Αναζήτηση</button>
-        </form>
-        <ul class="list" id="mapResults"></ul>
-        <div class="row">
-          <button id="mapDraw">Σχεδίαση περιοχής</button>
-          <button id="mapClear">Καθαρισμός</button>
-        </div>
-        <label class="field">Ανάλυση grid (m/pixel) <input type="number" id="mapMpp" min="0.5" step="0.1" value="3.46"></label>
-        <button id="mapImport" class="primary" disabled>Εισαγωγή από OpenStreetMap</button>
-        <p class="info" id="mapInfo"></p>
-        <p class="hint">Η ποιότητα του OpenStreetMap διαφέρει ανά περιοχή· ό,τι λείπει το συμπληρώνεις με το πινέλο. Δεδομένα © OpenStreetMap contributors.</p>
-      </div>
-
-      <div id="srcImage" class="hidden">
-        <label class="drop" id="drop">
-          <input type="file" id="file" accept="image/png,image/jpeg,image/bmp,image/tiff">
-          <span>Επίλεξε ή σύρε εδώ μια δορυφορική εικόνα (png, jpg, bmp)</span>
-        </label>
-        <p class="info" id="imageInfo"></p>
-      </div>
-    </div>
-  </section>
-
-  <section class="step" data-step="scale">
-    <h2><span class="n">2</span> Κλίμακα</h2>
-    <div class="body">
-      <p class="hint">Όρισε ένα από τα δύο:</p>
-      <label class="radio"><input type="radio" name="scaleMode" value="line" checked> Γραμμή αναφοράς γνωστού μήκους</label>
-      <div class="sub-body" id="scaleLine">
-        <p class="hint">Τράβηξε γραμμή πάνω σε κάτι γνωστού μήκους (πλάτος δρόμου, διάμετρο δεξαμενής) και γράψε τα μέτρα.</p>
-        <button id="drawRef">Σχεδίαση γραμμής</button>
-        <label class="field">Μήκος (m) <input type="number" id="refMeters" min="0.1" step="any" value="100"></label>
-      </div>
-      <label class="radio"><input type="radio" name="scaleMode" value="geo"> Γεωγραφικό πλάτος και zoom</label>
-      <div class="sub-body hidden" id="scaleGeo">
-        <p class="hint">Για screenshot χάρτη (Google, Bing) στο αρχικό μέγεθος, 256 px ανά tile: m/pixel = 156543.03·cos(lat)/2^zoom.</p>
-        <label class="field">Γεωγραφικό πλάτος (°) <input type="number" id="geoLat" step="any" min="-85" max="85" placeholder="π.χ. 25.9"></label>
-        <label class="field">Γεωγραφικό μήκος (°) <input type="number" id="geoLon" step="any" min="-180" max="180" placeholder="π.χ. 50.5"></label>
-        <div class="field">
-          <span class="lbl">
-            <label for="geoZoom">Zoom</label>
-            <span class="help" tabindex="0" role="button" aria-label="Πού βρίσκω το zoom;">?
-              <span class="bubble" role="tooltip">
-                Το zoom φαίνεται στη διεύθυνση (URL) του χάρτη από τον οποίο πήρες το screenshot:
-                <b>Google Maps</b>: <code>…/@25.9,50.5,<u>17</u>z</code> (πλάτος, μήκος, zoom)·
-                <b>Bing Maps</b>: <code>lvl=<u>17</u></code>·
-                <b>OpenStreetMap</b>: <code>#map=<u>17</u>/25.9/50.5</code>.
-                Το ίδιο URL δίνει και το γεωγραφικό πλάτος και μήκος.
-                Το screenshot πρέπει να είναι χωρίς μεγέθυνση του browser ή της οθόνης.
-              </span>
-            </span>
-          </span>
-          <input type="number" id="geoZoom" step="any" min="0" max="24" placeholder="π.χ. 17">
-        </div>
-      </div>
-      <p class="info" id="scaleInfo">Η κλίμακα δεν έχει οριστεί.</p>
+      <button id="mapImport" class="primary" disabled>Εισαγωγή από OpenStreetMap</button>
+      <p class="info" id="mapInfo"></p>
+      <p class="hint">Η ποιότητα του OpenStreetMap διαφέρει ανά περιοχή· ό,τι λείπει το συμπληρώνεις με το πινέλο. Δεδομένα © OpenStreetMap contributors.</p>
     </div>
   </section>
 
   <section class="step" data-step="region">
-    <h2><span class="n">3</span> Περιοχή εγκατάστασης</h2>
+    <h2><span class="n">2</span> Περιοχή εγκατάστασης</h2>
     <div class="body">
       <p class="hint">Κλικ για κορυφές· διπλό κλικ, Enter ή κλικ στην πρώτη κορυφή για κλείσιμο. Backspace αναιρεί κορυφή, Esc ακυρώνει.</p>
       <div class="seg" id="regionMode">
@@ -106,17 +74,10 @@
   </section>
 
   <section class="step" data-step="analyze">
-    <h2><span class="n">4</span> Κτίρια, δρόμοι, διόρθωση</h2>
+    <h2><span class="n">3</span> Διόρθωση χάρτη</h2>
     <div class="body">
-      <label class="field">Ανάλυση grid (m/pixel) <input type="number" id="targetMpp" min="0.5" step="0.1" value="3.46"></label>
-      <label class="field">Ευαισθησία <input type="range" id="sensitivity" min="4" max="40" value="14"><output id="sensitivityOut">14</output></label>
-      <label class="field">Ελάχ. πλάτος κτιρίου (m) <input type="number" id="minBuilding" min="2" step="1" value="8"></label>
-      <div class="row">
-        <button id="pickGround" title="Κλικ σε σημείο ανοιχτού εδάφους">Δείγμα εδάφους</button>
-        <button id="propose" class="primary">Αυτόματη πρόταση</button>
-      </div>
-      <p class="info" id="proposeInfo"></p>
-      <h3>Διόρθωση</h3>
+      <p class="hint">Κτίρια, δρόμοι και τοίχοι από το OpenStreetMap. Διόρθωσε ό,τι λείπει ή είναι λάθος με το πινέλο.</p>
+      <p class="info" id="correctionInfo"></p>
       <div class="palette" id="palette">
         <button data-class="1" class="active"><i style="background:#c9b98a"></i>Έδαφος</button>
         <button data-class="2"><i style="background:#ffffff"></i>Δρόμος</button>
@@ -124,7 +85,7 @@
         <button data-class="4"><i style="background:#262626"></i>Τοίχος</button>
         <button data-class="0"><i style="background:#7a7a7a"></i>Εκτός</button>
       </div>
-      <label class="field" title="Διάμετρος σε cells του grid (1 cell = η ανάλυση του grid)">Μέγεθος πινέλου (cells) <input type="range" id="brushSize" min="1" max="40" value="3"><output id="brushOut">3</output></label>
+      <label class="field" title="Διάμετρος σε cells του grid (1 cell = 1–3.46 m, ανάλογα με το μέγεθος της περιοχής)">Μέγεθος πινέλου (cells) <input type="range" id="brushSize" min="1" max="40" value="3"><output id="brushOut">3</output></label>
       <div class="row">
         <button id="brushTool">Πινέλο</button>
         <button id="undoLabels">Αναίρεση</button>
@@ -133,7 +94,7 @@
   </section>
 
   <section class="step" data-step="exits">
-    <h2><span class="n">5</span> Έξοδοι</h2>
+    <h2><span class="n">4</span> Έξοδοι</h2>
     <div class="body">
       <p class="hint">Σύρε ένα τμήμα στη θέση της εξόδου (π.χ. πάνω στον τοίχο/περίφραξη). Σχηματίζεται ορθογώνιο παραλληλόγραμμο: μήκος το τμήμα, πάχος όπως παρακάτω. Ανοίγει βατό πέρασμα και η έξοδος γίνεται προορισμός.</p>
       <label class="field">Πάχος (m) <input type="number" id="exitThickness" min="1" step="1" value="8"></label>
@@ -143,7 +104,7 @@
   </section>
 
   <section class="step" data-step="spawn">
-    <h2><span class="n">6</span> Agents</h2>
+    <h2><span class="n">5</span> Agents</h2>
     <div class="body">
       <label class="field">Πλήθος agents <input type="number" id="nAgents" min="1" step="1" value="100"></label>
       <p class="hint">Ζώνες spawn: κλικ για κορυφές πολυγώνου, διπλό κλικ ή Enter για κλείσιμο. Μπορείς να ορίσεις πολλές ζώνες.</p>
@@ -153,7 +114,7 @@
   </section>
 
   <section class="step" data-step="build">
-    <h2><span class="n">7</span> Heightmap</h2>
+    <h2><span class="n">6</span> Heightmap</h2>
     <div class="body">
       <button id="build" class="primary">Δημιουργία heightmap</button>
       <div class="info" id="buildInfo"></div>
@@ -167,7 +128,7 @@
   </section>
 
   <section class="step" data-step="sim">
-    <h2><span class="n">8</span> Προσομοίωση</h2>
+    <h2><span class="n">7</span> Προσομοίωση</h2>
     <div class="body">
       <p class="hint">Τρέχει το DStarLite - Scenario 3 (D* Lite + Social Force Model + τοξικό φορτίο) σε ξεχωριστή διεργασία Julia, πάνω στο heightmap που δημιούργησες.</p>
       <label class="field">Διάρκεια (s) <input type="number" id="simT" min="10" max="20000" step="10" value="2500"></label>
@@ -180,10 +141,11 @@
       <progress id="simProgress" class="hidden" max="1" value="0"></progress>
       <p class="info" id="simInfo"></p>
       <label class="radio check"><input type="checkbox" id="showCm" checked> Εμφάνιση concentration map</label>
+      <label class="radio check"><input type="checkbox" id="showSpawn" checked> Εμφάνιση ζωνών spawn</label>
       <h3>Διαφυγή και ακινητοποίηση</h3>
-      <canvas id="chartEsc" class="chart"></canvas>
+      <canvas id="chartEsc" class="chart" role="img" aria-label="Διάγραμμα διαφυγής και ακινητοποίησης agents ως προς τον χρόνο"></canvas>
       <h3>Κατανομή τοξικού φορτίου (τρέχον frame)</h3>
-      <canvas id="chartTL" class="chart"></canvas>
+      <canvas id="chartTL" class="chart" role="img" aria-label="Ιστόγραμμα κατανομής τοξικού φορτίου των agents στο τρέχον frame"></canvas>
       <div class="row hidden" id="simDownloads">
         <a id="dlCsv" download="trajectories.csv">trajectories.csv</a>
         <a id="dlResult" download="result.json">result.json</a>
@@ -193,15 +155,16 @@
 </aside>
 
 <div id="stage">
-  <div id="map"></div>
-  <canvas id="canvas"></canvas>
+  <div id="map" role="application" aria-label="Χάρτης OpenStreetMap για την επιλογή της περιοχής"></div>
+  <canvas id="canvas" role="img" aria-label="Χάρτης κλάσεων, heightmap και ζωντανή αναπαραγωγή της προσομοίωσης· ο σχεδιασμός γίνεται με ποντίκι ή αφή"></canvas>
   <div id="hud"></div>
   <div id="simbar" class="hidden">
     <button id="simPlay" title="Αναπαραγωγή / παύση">▶</button>
     <input type="range" id="simSlider" min="0" max="0" value="0">
     <select id="simSpeed" title="Ταχύτητα">
-      <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="5">5×</option><option value="10">10×</option>
+      <option value="1" selected>×1</option><option value="2">×2</option><option value="5">×5</option><option value="10">×10</option><option value="30">×30</option><option value="60">×60</option><option value="120">×120</option>
     </select>
+    <label class="barchk" title="Εμφάνιση/απόκρυψη των ζωνών όπου κάνουν spawn οι agents"><input type="checkbox" id="showSpawnBar" checked> Ζώνες spawn</label>
     <span id="simTime"></span>
   </div>
   <div class="legend">Τροχός: zoom · Δεξί ή μεσαίο κουμπί/Space: μετακίνηση</div>

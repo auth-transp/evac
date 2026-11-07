@@ -6,11 +6,6 @@ async function check(res) {
   return data;
 }
 
-// Ανεβάζει την εικόνα ως raw bytes· επιστρέφει {id, width, height}
-export async function upload(file) {
-  return check(await fetch('/api/upload', { method: 'POST', body: file }));
-}
-
 export async function post(path, obj) {
   return check(await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(obj) }));
 }

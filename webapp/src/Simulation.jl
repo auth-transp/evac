@@ -31,7 +31,9 @@ const NUM_CMS = 7                                                   # πλήθο
 const CM_SWITCH_TIMES = [0.0, 0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0]   # εκκίνηση κατευθείαν από το CM2 (το CM1 παραλείπεται), μετά εναλλαγή ανά 292 s
 const GOAL_RADIUS_M = 5.0                                           # ακτίνα (m) γύρω από την έξοδο που θεωρείται «διέφυγε» (στο σενάριο: 10 pixels)
 const WHITE_THRESHOLD = 245                                         # (255 - τιμή heightmap) > 245: μη βατό
-const SFM_SUBSTEPS = 20                                             # υπο-βήματα SFM ανά βήμα μοντέλου (dt_sfm = 0.05 s << τ = 0.5 s)
+const GROUND_COST = 255 - 102                                       # κόστος κίνησης στο έδαφος (heightmap 102): 153
+const MIN_CM_PENALTY = 2 * GROUND_COST                              # ελάχιστο πεναλτυ διαδρομής όπου υπάρχει νέφος: διπλάσιο του εδάφους, ώστε να αποφεύγεται πάση θυσία
+const SFM_SUBSTEPS = 20                                            # υπο-βήματα SFM ανά βήμα μοντέλου (dt_sfm = 0.05 s << τ = 0.5 s)
 const SFM_WAYPOINT_RADIUS = 0.5                                     # (pixels) απόσταση στην οποία ένα waypoint θεωρείται επιτευγμένο
 const DEFAULT_CM_DIR = joinpath(@__DIR__, "..", "..", "Concentration Maps")   # τα 7 CMs των προσομοιώσεων της διατριβής
 
@@ -60,7 +62,16 @@ end
     return (clamp(Int(floor(p[1])), 1, dims[1]), clamp(Int(floor(p[2])), 1, dims[2]))
 end
 
-at_goal(pos, dests, radius) = minimum(hypot(pos[1] - d[1], pos[2] - d[2]) for d in dests) <= radius
+# Πεναλτυ διαδρομής από τη συγκέντρωση: όπου υπάρχει νέφος (C > 0) τουλάχιστον MIN_CM_PENALTY· το τοξικό φορτίο χρησιμοποιεί την πραγματική συγκέντρωση
+route_penalty(cm) = map(c -> c > 0 ? max(c, MIN_CM_PENALTY) : 0.0, cm)
+
+# Κόστος διαδρομής ανά cell (ανάγλυφο + πεναλτυ νέφους), κλιμακωμένο με τη διάσταση του cell: τα κόστη των σεναρίων είναι βαθμονομημένα για
+# cells COST_REFERENCE_MPP μέτρων· σε πιο λεπτό grid ένας agent διασχίζει περισσότερα cells για την ίδια απόσταση, άρα το κόστος ανά cell
+# πολλαπλασιάζεται με mpp / COST_REFERENCE_MPP ώστε το κόστος ανά μέτρο (και οι προτιμήσεις διαδρομής) να μένουν ίδια σε κάθε ανάλυση.
+const COST_REFERENCE_MPP = 3.46
+path_costs(heightmap, penalty_map, scale::Real) = round.(Int, (heightmap .+ route_penalty(penalty_map)) .* scale)
+
+at_goal(pos, dests, radius) =minimum(hypot(pos[1] - d[1], pos[2] - d[2]) for d in dests) <= radius
 
 function find_changed_cells(old::AbstractMatrix{Int}, new::AbstractMatrix{Int})
     cells = Tuple{Int,Int}[]
@@ -134,6 +145,67 @@ function model_step!(model)
     end
 end
 
+# --- Ξεκόλλημα agents που «σκαλώνουν» ---
+
+const STUCK_WINDOW_S = 15                           # παράθυρο ελέγχου (s)
+const STUCK_DIST_M = 2.0                            # κίνηση μικρότερη από αυτή μέσα στο παράθυρο θεωρείται «σκάλωμα»
+const STUCK_FLASH_S = 5                             # για τόσα s μετά το ξεκόλλημα ο agent σημαίνεται στην οπτικοποίηση
+
+# Παρακολούθηση ανά agent: κάθε `window` frames συγκρίνεται η θέση με την προηγούμενη. Αν ο agent κινήθηκε λιγότερο από `dist` (pixels)
+# ενώ θα μπορούσε να έχει κινηθεί τουλάχιστον 2 × dist (η επιθυμητή ταχύτητά του το επιτρέπει), είναι «σκαλωμένος» και το στάδιο αυξάνεται
+# (1, 2, 3, ...)· αν κινήθηκε κανονικά, το στάδιο μηδενίζεται. Μια ουρά που προχωρά αργά δεν μετρά (κινείται), ούτε όσοι έχουν πολύ μικρή
+# επιθυμητή ταχύτητα λόγω τοξικού φορτίου.
+mutable struct StuckTracker
+    window::Int
+    dist::Float64
+    anchor_pos::Dict{Int,Tuple{Float64,Float64}}
+    anchor_frame::Dict{Int,Int}
+    stage::Dict{Int,Int}
+end
+StuckTracker(window::Integer, dist_px::Real) = StuckTracker(window, Float64(dist_px), Dict{Int,Tuple{Float64,Float64}}(), Dict{Int,Int}(), Dict{Int,Int}())
+
+# Επιστρέφει 0 (όχι σκαλωμένος ή δεν ήρθε ώρα ελέγχου) ή το στάδιο σκαλώματος 1, 2, 3, ...
+function check!(tr::StuckTracker, id::Int, pos, frame::Int, v0::Real)
+    if !haskey(tr.anchor_frame, id)
+        tr.anchor_pos[id] = (Float64(pos[1]), Float64(pos[2])); tr.anchor_frame[id] = frame; tr.stage[id] = 0
+        return 0
+    end
+    frame - tr.anchor_frame[id] < tr.window && return 0
+    a = tr.anchor_pos[id]
+    moved = hypot(pos[1] - a[1], pos[2] - a[2])
+    tr.anchor_pos[id] = (Float64(pos[1]), Float64(pos[2])); tr.anchor_frame[id] = frame
+    if moved < tr.dist && v0 * tr.window >= 2 * tr.dist
+        return tr.stage[id] += 1
+    end
+    tr.stage[id] = 0
+    return 0
+end
+
+# Ξεκόλλημα κλιμακωτά: 1) νέα διαδρομή από την τρέχουσα θέση και μηδενισμός της ορμής του SFM· 2) επιπλέον τυχαία ώθηση·
+# 3+) επιπλέον μετακίνηση στο επόμενο σημείο της διαδρομής. Επιστρέφει το όνομα της ενέργειας και αν ο agent έχει πλέον διαδρομή.
+function unstick!(model, a, stage::Int, planners, dims, rng)
+    ped = model.sfm.pedestrians[a.id]
+    a.path = choose_best_path([extract_path(p, world_to_cell(a.pos, dims)) for p in planners])
+    ped.w = zero(ped.w); ped.v = zero(ped.v)                                    # μηδενισμός ορμής: τυχόν «σφήνωμα» από συσσωρευμένη δύναμη
+    action = "replan"
+    if stage == 2
+        θ = 2π * rand(rng)
+        ped.w = typeof(ped.w)(cos(θ) * ped.v0, sin(θ) * ped.v0)                  # ώθηση με την επιθυμητή ταχύτητα προς τυχαία κατεύθυνση
+        ped.v = ped.w
+        action = "push"
+    elseif stage >= 3
+        cur = world_to_cell(a.pos, dims)
+        k = findfirst(c -> c != cur, a.path)
+        if k !== nothing
+            target = a.path[k]
+            move_agent!(a, SVector{2,Float64}(target[1], target[2]), model)      # το κέντρο του επόμενου cell της διαδρομής
+            a.path = a.path[k+1:end]
+            action = "teleport"
+        end
+    end
+    return action, !isempty(a.path)
+end
+
 # --- Έξοδοι αρχείων ---
 
 # Εγγραφή JSON ατομικά (πρώτα σε προσωρινό αρχείο) ώστε ο server να μη διαβάσει μισογραμμένο αρχείο
@@ -149,10 +221,12 @@ end
     run_simulation(dir; T = 2500, seed = 123, cm_dir = DEFAULT_CM_DIR, progress_every = 10)
 
 Τρέχει την προσομοίωση για το project στον φάκελο `dir` (heightmap.png, spawn_mask.png, config.json από το Live Service).
-Γράφει στον ίδιο φάκελο: meta.json, cm_1..7.png, frames.bin (ανά frame και agent: col, row, toxicload, escaped ως Float32),
+Γράφει στον ίδιο φάκελο: meta.json, cm_1..7.png, frames.bin (ανά frame και agent: col, row, toxicload, κατάσταση ως Float32:
+0 κανονικός, 1 διέφυγε, 2 μόλις ξεκόλλησε από σκάλωμα),
 trajectories.csv (step, agent_id, x, y, toxicload, με x = γραμμή, y = στήλη όπως στα σενάρια), progress.json και result.json.
 """
-function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_dir = DEFAULT_CM_DIR, progress_every::Int = 10)
+function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_dir = DEFAULT_CM_DIR, progress_every::Int = 10,
+                        stuck_window_s::Int = STUCK_WINDOW_S, stuck_dist_m::Real = STUCK_DIST_M, stuck_force::Bool = false)
     t_start = time()
     progress(status, frame; extra...) = write_json(joinpath(dir, "progress.json"),
         (; status, frame, T, elapsed = round(time() - t_start; digits = 1), extra...))
@@ -168,7 +242,8 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
 
     cm_list = load_cms(cm_dir, dims)
     penalty_map = copy(cm_list[searchsortedlast(CM_SWITCH_TIMES, 0.0)])                                               # το τρέχον CM λειτουργεί ως penalty_map
-    NPM_int = round.(Int, heightmap .+ penalty_map)                              # ανάγλυφο + τοξική συγκέντρωση
+    cost_scale = (1 / mpx) / COST_REFERENCE_MPP                                  # κλιμάκωση κόστους ανά cell με τη διάσταση του cell (1 στα 3.46 m/pixel)
+    NPM_int = path_costs(heightmap, penalty_map, cost_scale)                     # ανάγλυφο + πεναλτυ νέφους (κόστος διαδρομής)
 
     # έξοδοι: το goal_cell (γραμμή, στήλη) που υπολόγισε το Live Service, ως σημεία (x = γραμμή, y = στήλη)
     exits = [e for e in cfg.exits if e.goal_cell !== nothing]
@@ -240,6 +315,10 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
 
     # κύριος βρόχος: βήμα μοντέλου, εναλλαγή CM με replanning, καταγραφή frame
     escaped_at = Dict{Int,Int}()                                                 # id => frame διαφυγής
+    tracker = StuckTracker(stuck_window_s, stuck_dist_m * mpx)                   # ανίχνευση σκαλώματος (το όριο σε pixels του grid)
+    flash_until = Dict{Int,Int}()                                                # id => τελευταίο frame που ο agent σημαίνεται ως «ξεκολλημένος»
+    stuck_events = NamedTuple{(:frame, :id, :stage, :action),Tuple{Int,Int,Int,String}}[]
+    unrecoverable = Set{Int}()                                                   # agents που ακόμη και μετά το replanning δεν έχουν διαδρομή
     current_map_idx = searchsortedlast(CM_SWITCH_TIMES, 0.0)
     t_sim_total = 0.0
     t_replan_total = 0.0
@@ -255,10 +334,11 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
             if new_idx != current_map_idx
                 current_map_idx = new_idx
                 penalty_map .= cm_list[current_map_idx]
-                NPM_int_new = round.(Int, heightmap .+ penalty_map)
+                NPM_int_new = path_costs(heightmap, penalty_map, cost_scale)
                 pathfinderPM.cost_metric.pmap .= NPM_int_new                     # ενημέρωση του κόστους in-place (χωρίς νέο DStarLite)
                 changed = find_changed_cells(prev_NPM, NPM_int_new)
                 prev_NPM .= NPM_int_new
+                old_paths = Dict(a.id => copy(a.path) for a in allagents(model))
                 t_replan_total += @elapsed begin
                     for planner in planners
                         update_after_cm_change!(planner, changed)                # αυξητικό replanning μόνο στα αλλαγμένα cells
@@ -267,7 +347,30 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
                         a.path = choose_best_path([extract_path(p, world_to_cell(a.pos, dims)) for p in planners])
                     end
                 end
-                println("Frame $frame: CM $current_map_idx, replanning ($(length(changed)) cells)")
+                # διαγνωστικό: πόσοι agents άλλαξαν διαδρομή (διαφορετική έξοδος ή ≥ 10% διαφορετικά cells) εξαιτίας του νέου CM
+                n_active = 0; n_new_route = 0; n_new_exit = 0
+                for a in allagents(model)
+                    old = old_paths[a.id]
+                    (isempty(old) || isempty(a.path) || at_goal(a.pos, dests, goal_radius)) && continue
+                    n_active += 1
+                    last(old) != last(a.path) && (n_new_exit += 1)
+                    n_diff = length(setdiff(Set(a.path), Set(old)))
+                    n_diff >= 0.1 * length(a.path) && (n_new_route += 1)
+                end
+                println("Frame $frame: CM $current_map_idx, replanning ($(length(changed)) cells), νέα διαδρομή: $n_new_route/$n_active agents, άλλη έξοδος: $n_new_exit")
+            end
+
+            # ξεκόλλημα: μόνο όσοι κινούνται κανονικά (όχι όσοι διέφυγαν ή ακινητοποιήθηκαν από το τοξικό φορτίο, που είναι σκόπιμο)
+            for id in ids
+                a = model[id]
+                (at_goal(a.pos, dests, goal_radius) || a.toxicload >= 3.0) && continue
+                stage = stuck_force ? (frame % stuck_window_s == 0 ? (tracker.stage[id] = get(tracker.stage, id, 0) + 1) : 0) :   # stuck_force: μόνο για δοκιμές
+                        check!(tracker, id, a.pos, frame, model.sfm.pedestrians[id].v0)
+                stage == 0 && continue
+                action, has_path = unstick!(model, a, stage, planners, dims, rng)
+                has_path || push!(unrecoverable, id)
+                push!(stuck_events, (; frame, id, stage, action))
+                flash_until[id] = frame + STUCK_FLASH_S
             end
 
             for (k, id) in enumerate(ids)
@@ -277,7 +380,7 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
                 buf[4k-3] = a.pos[2] - 0.5                                       # στήλη (x της εικόνας)
                 buf[4k-2] = a.pos[1] - 0.5                                       # γραμμή (y της εικόνας)
                 buf[4k-1] = a.toxicload
-                buf[4k] = esc ? 1.0f0 : 0.0f0
+                buf[4k] = esc ? 1.0f0 : (get(flash_until, id, 0) >= frame ? 2.0f0 : 0.0f0)   # 1 = διέφυγε, 2 = μόλις ξεκόλλησε
                 println(fcsv, frame, ',', id, ',', a.pos[1], ',', a.pos[2], ',', a.toxicload)
             end
             write(fbin, buf)
@@ -293,7 +396,11 @@ function run_simulation(dir::AbstractString; T::Int = 2500, seed::Int = 123, cm_
     result = (; status = "done", n_agents = length(ids), T, escaped = length(escaped_at), incapacitated,
         mean_escape_time = isempty(escaped_at) ? nothing : sum(values(escaped_at)) / length(escaped_at),
         no_path, simulation_time = round(t_sim_total; digits = 2), replanning_time = round(t_replan_total; digits = 2),
-        total_time = round(time() - t_start; digits = 1))
+        total_time = round(time() - t_start; digits = 1),
+        stuck_agents = length(unique(e.id for e in stuck_events)), stuck_events = length(stuck_events),
+        stuck_pushes = count(e -> e.action == "push", stuck_events), stuck_teleports = count(e -> e.action == "teleport", stuck_events),
+        stuck_unrecoverable = length(unrecoverable), stuck_log = first(stuck_events, 300),
+        stuck_window_s, stuck_dist_m = Float64(stuck_dist_m), cost_scale, meters_per_pixel = 1 / mpx)
     write_json(joinpath(dir, "result.json"), result)
     progress("done", T; escaped = length(escaped_at))
     return result

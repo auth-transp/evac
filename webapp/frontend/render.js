@@ -41,8 +41,8 @@ export function render(canvas, vp, s) {
     ctx.setLineDash([]);
   });
 
-  // ζώνες spawn
-  s.spawn.forEach(z => {
+  // ζώνες spawn (μπορούν να κρυφτούν κατά το animation)
+  (s.showSpawn ? s.spawn : []).forEach(z => {
     path(ctx, z.points, true);
     ctx.fillStyle = 'rgba(56,132,255,.28)'; ctx.fill();
     ctx.strokeStyle = '#3884ff'; ctx.stroke();
@@ -58,13 +58,6 @@ export function render(canvas, vp, s) {
   // agents, concentration map και έξοδοι της προσομοίωσης
   drawSim(ctx, vp, s.grid, s.showCm);
 
-  // γραμμή αναφοράς κλίμακας
-  if (s.refLine) {
-    path(ctx, s.refLine, false);
-    ctx.strokeStyle = '#ff7a00'; ctx.lineWidth = 3 * px; ctx.stroke();
-    s.refLine.forEach(p => { ctx.beginPath(); ctx.arc(p[0], p[1], 4 * px, 0, 7); ctx.fillStyle = '#ff7a00'; ctx.fill(); });
-  }
-
   // προσχέδιο (πολύγωνο ή τμήμα εξόδου που σχεδιάζεται)
   const dr = s.draft;
   if (dr) {
@@ -75,6 +68,27 @@ export function render(canvas, vp, s) {
     path(ctx, pts, false); ctx.stroke();
     ctx.setLineDash([]);
     dr.points.forEach((p, i) => { ctx.beginPath(); ctx.arc(p[0], p[1], (i ? 3 : 5) * px, 0, 7); ctx.fillStyle = '#fff'; ctx.fill(); });
+  }
+
+  // στοιχείο λίστας υπό το ποντίκι: έντονο ματζέντα (δεν υπάρχει αλλού στον χάρτη) με λευκό περίγραμμα, ώστε να ξεχωρίζει από φόντο και υπόλοιπες καταχωρήσεις
+  const hv = s.hover;
+  if (hv) {
+    const pts = hv.key === 'region' ? s.region[hv.i]?.points : hv.key === 'spawn' ? s.spawn[hv.i]?.points
+      : hv.key === 'exits' && s.exits[hv.i] ? exitCorners(s.exits[hv.i].p1, s.exits[hv.i].p2, s.exits[hv.i].thickness_m / (s.srcMpp || 1)) : null;
+    if (pts && pts.length) {
+      path(ctx, pts, true);
+      ctx.fillStyle = 'rgba(255,0,200,.32)'; ctx.fill();
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 7 * px; ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.stroke();
+      ctx.lineWidth = 3.5 * px; ctx.strokeStyle = '#ff00c8'; ctx.stroke();
+      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      if (Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * vp.scale < 40) {   // μικρό σχήμα (π.χ. έξοδος): δακτύλιος γύρω του για να βρεθεί εύκολα
+        ctx.beginPath(); ctx.arc(cx, cy, 16 * px, 0, 7);
+        ctx.lineWidth = 5 * px; ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.stroke();
+        ctx.lineWidth = 2.5 * px; ctx.strokeStyle = '#ff00c8'; ctx.stroke();
+      }
+    }
   }
 
   // δείκτης πινέλου

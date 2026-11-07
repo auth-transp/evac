@@ -52,22 +52,6 @@ function fill_polygon!(mask::BitMatrix, pts, value::Bool)
     return mask
 end
 
-# Μάσκα περιοχής από λίστα πολυγώνων {mode: "add"|"subtract", points}, εφαρμόζονται με τη σειρά
-function region_mask(polys, g::Grid)
-    mask = falses(g.h, g.w)
-    for p in polys
-        pts = [to_grid(g, q) for q in p.points]
-        tmp = falses(g.h, g.w)
-        fill_polygon!(tmp, pts, true)
-        if get(p, :mode, "add") == "subtract"
-            mask .&= .!tmp
-        else
-            mask .|= tmp
-        end
-    end
-    return mask
-end
-
 # Ορθογώνιο παραλληλόγραμμο από ευθύγραμμο τμήμα p1–p2 (πλάτος της εξόδου) και πάχος σε grid pixels
 function rect_corners(p1, p2, thickness_px::Real)
     dx, dy = p2[1] - p1[1], p2[2] - p1[2]
@@ -95,8 +79,8 @@ end
 # Βατά cells με τον ίδιο κανόνα του σεναρίου: walkmap[heightmap .> 245] .= false μετά την αντιστροφή
 walkable(hm::Matrix{UInt8}) = (255 .- Int.(hm)) .<= WHITE_THRESHOLD
 
-# Συνεκτικές συνιστώσες (8 γειτόνων) ενός BitMatrix· επιστρέφει πίνακα ετικετών (0 = κενό)
-function components(M::AbstractMatrix{Bool})
+# Συνεκτικές συνιστώσες ενός BitMatrix (8 γειτόνων, ή 4 με diag = false)· επιστρέφει πίνακα ετικετών (0 = κενό)
+function components(M::AbstractMatrix{Bool}; diag::Bool = true)
     h, w = size(M)
     lab = zeros(Int, h, w)
     n = 0
@@ -109,6 +93,7 @@ function components(M::AbstractMatrix{Bool})
         while !isempty(stack)
             (ci, cj) = pop!(stack)
             for di in -1:1, dj in -1:1
+                (diag || di == 0 || dj == 0) || continue
                 ni, nj = ci + di, cj + dj
                 (1 <= ni <= h && 1 <= nj <= w) || continue
                 if M[ni, nj] && lab[ni, nj] == 0

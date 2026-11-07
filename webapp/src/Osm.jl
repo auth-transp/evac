@@ -4,11 +4,14 @@
 
 # Δημόσιοι server Overpass: δοκιμάζονται με τη σειρά μέχρι να απαντήσει κάποιος (συχνά είναι υπερφορτωμένοι)
 const OVERPASS_MIRRORS = [
+    "https://lz4.overpass-api.de/api/interpreter",
     "https://overpass-api.de/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
+const OVERPASS_CACHE_TTL_S = 24 * 3600              # η απάντηση μιας περιοχής ξαναχρησιμοποιείται για 24 ώρες (χωρίς νέο αίτημα)
 const OSM_USER_AGENT = "LiveService/1.0 (evacuation simulation research)"
 const OSM_MAX_SPAN_M = 8000.0                       # μέγιστη διάσταση περιοχής (m)· μεγαλύτερες περιοχές δεν ζητούνται από το Overpass
 
@@ -36,27 +39,78 @@ function overpass_query(south, west, north, east)
            ");out geom;"
 end
 
-function fetch_overpass(query::AbstractString; mirrors = OVERPASS_MIRRORS)
-    errors = String[]
-    for m in mirrors
+# Αρχείο cache για ένα ερώτημα: οι απαντήσεις αποθηκεύονται στον φάκελο data (δεν μπαίνει στο git)
+overpass_cache_file(query) = joinpath(DATA_DIR, "overpass_cache", string(hash(query); base = 16) * ".json")
+
+# Δοκιμάζει τους server με τη σειρά (σε `rounds` γύρους, με παύση `pause` s ανάμεσα)· οι δημόσιοι server Overpass είναι συχνά υπερφορτωμένοι
+# (502/504/timeout). Επιτυχημένη απάντηση αποθηκεύεται, ώστε ίδιο ερώτημα (π.χ. άλλο m/pixel στην ίδια περιοχή) να μη ξαναζητηθεί.
+function fetch_overpass(query::AbstractString; mirrors = OVERPASS_MIRRORS, rounds::Int = 2, pause::Real = 4.0, hedge::Real = 15.0,
+                        cache_ttl::Real = OVERPASS_CACHE_TTL_S)
+    cache = overpass_cache_file(query)
+    if isfile(cache) && time() - mtime(cache) < cache_ttl
         try
-            r = HTTP.post(m, ["Content-Type" => "application/x-www-form-urlencoded", "User-Agent" => OSM_USER_AGENT],
-                "data=" * HTTP.URIs.escapeuri(query); readtimeout = 60, connect_timeout = 10, retry = false, status_exception = false)
-            if r.status != 200
-                push!(errors, "$(HTTP.URI(m).host): HTTP $(r.status)")
-                continue
-            end
-            j = JSON3.read(String(r.body))
-            if haskey(j, :remark) && occursin("error", lowercase(string(j.remark)))      # ο server έκοψε το ερώτημα (timeout, μνήμη)
-                push!(errors, "$(HTTP.URI(m).host): $(j.remark)")
-                continue
-            end
-            return j
-        catch e
-            push!(errors, "$(HTTP.URI(m).host): $(first(sprint(showerror, e), 80))")
+            return JSON3.read(read(cache, String))
+        catch
+            rm(cache; force = true)                                 # κατεστραμμένο αρχείο: ζητείται ξανά
         end
     end
-    error("Το OpenStreetMap (Overpass) δεν απάντησε· δοκίμασε ξανά σε λίγο ή με μικρότερη περιοχή. ($(join(errors, " | ")))")
+    errors = String[]
+    for round in 1:rounds
+        round > 1 && sleep(pause)
+        res, errs = race_mirrors(query, mirrors; hedge = hedge)
+        if res !== nothing
+            try
+                mkpath(dirname(cache))
+                write(cache, res.body)
+            catch
+            end
+            return res.json
+        end
+        round == rounds && append!(errors, errs)
+    end
+    error("Το OpenStreetMap (Overpass) δεν απάντησε σε $(rounds) γύρους (οι δημόσιοι server είναι συχνά υπερφορτωμένοι)· δοκίμασε ξανά σε λίγο ή με μικρότερη περιοχή. ($(join(errors, " | ")))")
+end
+
+# Ένα αίτημα σε έναν server: (json, body) ή σφάλμα ως κείμενο
+function try_mirror(m::AbstractString, query::AbstractString)
+    host = HTTP.URI(m).host
+    try
+        r = HTTP.post(m, ["Content-Type" => "application/x-www-form-urlencoded", "User-Agent" => OSM_USER_AGENT],
+            "data=" * HTTP.URIs.escapeuri(query); readtimeout = 70, connect_timeout = 10, retry = false, status_exception = false)
+        r.status != 200 && return (; ok = false, error = "$host: HTTP $(r.status)")
+        body = String(r.body)
+        j = JSON3.read(body)
+        haskey(j, :remark) && occursin("error", lowercase(string(j.remark))) && return (; ok = false, error = "$host: $(j.remark)")   # ο server έκοψε το ερώτημα
+        return (; ok = true, json = j, body = body)
+    catch e
+        return (; ok = false, error = "$host: $(first(sprint(showerror, e), 80))")
+    end
+end
+
+# Hedged αιτήματα: ξεκινά ο πρώτος server· αν δεν απαντήσει μέσα σε `hedge` s (ή αποτύχει) ξεκινά ο επόμενος παράλληλα, κ.ο.κ.
+# Κερδίζει η πρώτη επιτυχής απάντηση. Επιστρέφει (αποτέλεσμα ή nothing, λίστα σφαλμάτων).
+function race_mirrors(query::AbstractString, mirrors; hedge::Real = 15.0)
+    ch = Channel{Any}(max(1, length(mirrors)))
+    started = finished = 0
+    errs = String[]
+    launch!() = (started += 1; m = mirrors[started]; @async put!(ch, try_mirror(m, query)))
+    isempty(mirrors) && return nothing, errs
+    launch!()
+    while finished < length(mirrors)
+        t0 = time()
+        while !isready(ch) && time() - t0 < hedge
+            sleep(0.2)
+        end
+        if isready(ch)
+            res = take!(ch); finished += 1
+            res.ok && return res, errs
+            push!(errs, res.error)
+            started < length(mirrors) && launch!()                    # ο server απέτυχε: αμέσως ο επόμενος
+        elseif started < length(mirrors)
+            launch!()                                                 # αργεί: ξεκινά ο επόμενος παράλληλα
+        end
+    end
+    return nothing, errs
 end
 
 # --- Γεωμετρία ---
@@ -146,8 +200,17 @@ function stitch_rings(ways)
     return rings
 end
 
+# Αυτόματη ανάλυση του grid (m/pixel) από τη μεγαλύτερη διάσταση της περιοχής (σε m): το πιο λεπτό grid που κρατά τη μεγαλύτερη διάσταση
+# περίπου στα AUTO_GRID_CELLS cells, με όρια AUTO_MPP_MIN..AUTO_MPP_MAX· πάνω από το όριο μεγέθους ο καλούντας το αυξάνει ώστε να μη
+# ξεπεραστούν τα max_side cells. Μικρές περιοχές: 1 m/pixel· μεγάλες: 3.46 m/pixel, η τιμή με την οποία είναι βαθμονομημένα τα σενάρια.
+const AUTO_GRID_CELLS = 700
+const AUTO_MPP_MIN = 1.0
+const AUTO_MPP_MAX = 3.46
+auto_mpp(span_m::Real) = clamp(span_m / AUTO_GRID_CELLS, AUTO_MPP_MIN, AUTO_MPP_MAX)
+
 # Grid, προβολή και μετατροπή (lat, lon) -> συντεταγμένες grid για το πολύγωνο της περιοχής [(lat, lon), ...]
-function osm_grid(polygon; target_mpp::Real = 3.46, max_side::Int = 1600)
+# target_mpp = nothing: αυτόματη ανάλυση (auto_mpp)
+function osm_grid(polygon; target_mpp::Union{Nothing,Real} = nothing, max_side::Int = 1600)
     lat0 = sum(first.(polygon)) / length(polygon)
     lon0 = sum(last.(polygon)) / length(polygon)
     m = [xy_meters(lat0, lon0, p[1], p[2]) for p in polygon]
@@ -155,14 +218,14 @@ function osm_grid(polygon; target_mpp::Real = 3.46, max_side::Int = 1600)
     span = max(xmax - xmin, ymax - ymin)
     span > OSM_MAX_SPAN_M && error("Η περιοχή είναι πολύ μεγάλη ($(round(Int, span)) m· μέγιστο $(round(Int, OSM_MAX_SPAN_M)) m)")
     span < 20 && error("Η περιοχή είναι πολύ μικρή")
-    mpp = max(Float64(target_mpp), span / max_side)
+    mpp = max(target_mpp === nothing ? auto_mpp(span) : Float64(target_mpp), span / max_side)
     g = Grid(0.0, 0.0, 1.0, max(4, ceil(Int, (xmax - xmin) / mpp)), max(4, ceil(Int, (ymax - ymin) / mpp)), mpp)
     togrid(lat, lon) = (p = xy_meters(lat0, lon0, lat, lon); ((p[1] - xmin) / mpp, (p[2] - ymin) / mpp))
     return g, togrid
 end
 
 # Χάρτης κλάσεων και προτάσεις εξόδων από τα στοιχεία (elements) μιας απάντησης Overpass
-function build_from_osm(polygon, elements; target_mpp::Real = 3.46, max_side::Int = 1600)
+function build_from_osm(polygon, elements; target_mpp::Union{Nothing,Real} = nothing, max_side::Int = 1600)
     g, togrid = osm_grid(polygon; target_mpp, max_side)
     poly_g = [togrid(p[1], p[2]) for p in polygon]
     region = fill_polygon!(falses(g.h, g.w), poly_g, true)
@@ -171,11 +234,13 @@ function build_from_osm(polygon, elements; target_mpp::Real = 3.46, max_side::In
     rmask = falses(g.h, g.w)                                   # δρόμοι
     road_segs = Tuple{Any,Any,Float64}[]                       # (a, b, πλάτος m) για τις τομές με το όριο
     gates = Tuple{Float64,Float64}[]
+    entrances = Tuple{Float64,Float64}[]                       # είσοδοι κτιρίων (entrance=*) -> πόρτες στους τοίχους
     n_buildings = n_roads = 0
 
     for el in elements
         typ = el.type
         if typ == "node"
+            osm_tag(el, "entrance") !== nothing && osm_tag(el, "entrance") != "no" && push!(entrances, togrid(el.lat, el.lon))
             (osm_tag(el, "entrance") !== nothing || osm_tag(el, "barrier") in GATE_BARRIERS) && push!(gates, togrid(el.lat, el.lon))
         elseif typ == "way" && haskey(el, :geometry)
             geom = el.geometry
@@ -211,13 +276,14 @@ function build_from_osm(polygon, elements; target_mpp::Real = 3.46, max_side::In
     end
 
     # κλάσεις με προτεραιότητα: τοίχος > εσωτερικό κτιρίου > δρόμος > έδαφος· εκτός περιοχής μη βατό
-    interior = erode_box(bmask, 1)
-    walls = bmask .& .!interior
+    walls = building_walls(bmask)
+    interior = bmask .& .!walls
     labels = fill(CLASS_OUTSIDE, g.h, g.w)
     labels[region] .= CLASS_GROUND
     labels[rmask .& region] .= CLASS_ROAD
     labels[interior .& region] .= CLASS_BUILDING
     labels[walls .& region] .= CLASS_WALL
+    doors_osm, doors_auto = open_doors!(labels, entrances, g.mpp)   # πόρτες στις εισόδους του OSM και αυτόματα στα κτίρια που μένουν κλειστά
 
     exits = suggest_exits(poly_g, gates, road_segs, g.mpp)
 
@@ -226,7 +292,7 @@ function build_from_osm(polygon, elements; target_mpp::Real = 3.46, max_side::In
     n_roads == 0 && push!(warnings, "Δεν βρέθηκαν δρόμοι στο OpenStreetMap για αυτή την περιοχή.")
     isempty(exits) && push!(warnings, "Δεν βρέθηκαν πύλες ή δρόμοι που τέμνουν το όριο· όρισε τις εξόδους χειροκίνητα.")
     return (; grid = g, labels, region = [collect(p) for p in poly_g], exits,
-        counts = (; buildings = n_buildings, roads = n_roads, gates = length(gates)), warnings)
+        counts = (; buildings = n_buildings, roads = n_roads, gates = length(gates), doors_osm, doors_auto), warnings)
 end
 
 # Προτάσεις εξόδων: πρώτα οι πύλες κοντά στο όριο, μετά οι δρόμοι που τέμνουν το όριο. Κάθε πρόταση είναι τμήμα κατά μήκος

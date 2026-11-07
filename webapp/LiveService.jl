@@ -1,50 +1,29 @@
 module LiveService
-# Live Service: τοπικός server για τη δημιουργία heightmap από κάτοψη/δορυφορική εικόνα (Oxygen.jl)
+# Live Service: τοπικός server για τη δημιουργία heightmap εκκένωσης από δεδομένα OpenStreetMap (Oxygen.jl)
 # Εκκίνηση:  julia --project=webapp webapp/LiveService.jl   και άνοιγμα του http://127.0.0.1:8080
 
 using Oxygen            # web framework
 using HTTP              # αντικείμενα Request/Response
 using JSON3             # ανάγνωση/εγγραφή JSON
-using Images            # φόρτωση/επεξεργασία εικόνων (Lab, imresize, ...)
-using FileIO            # load/save εικόνων
-using ImageIO           # αποκωδικοποίηση png/jpg
-using ImageMagick       # αποκωδικοποίηση bmp/tiff
+using Images            # τύποι εικόνας (RGB, Gray) για την αποθήκευση του heightmap
+using FileIO            # save εικόνων
+using ImageIO           # κωδικοποίηση png
 using Base64            # μεταφορά των labels ως base64
 using Random            # τυχαία αναγνωριστικά project
 
 include("src/Heightmap.jl")
-include("src/Propose.jl")
+include("src/Buildings.jl")
 include("src/Osm.jl")
 
 const FRONTEND_DIR = joinpath(@__DIR__, "frontend")
-const DATA_DIR = joinpath(@__DIR__, "data")             # uploads και αποτελέσματα ανά project (δεν μπαίνει στο git)
-const DEFAULT_MPP = 2500.0 / 723.37                     # m ανά pixel του Qatargas Map (1 / METERS_TO_PIXELS του σεναρίου)
+const DATA_DIR = joinpath(@__DIR__, "data")             # αποτελέσματα ανά project και cache του Overpass (δεν μπαίνει στο git)
 const MAX_GRID_SIDE = 1600                              # ανώτατη διάσταση του grid ώστε ο D* Lite να μένει γρήγορος
 # αρχεία ενός project που επιτρέπεται να κατεβάσει ο browser (heightmap/config από το build, τα υπόλοιπα από την προσομοίωση)
 const SERVED_FILES = r"^(heightmap\.png|spawn_mask\.png|config\.json|meta\.json|progress\.json|result\.json|frames\.bin|trajectories\.csv|sim\.log|cm_[1-7]\.png)$"
 const CONTENT_TYPES = Dict(".png" => "image/png", ".json" => "application/json", ".bin" => "application/octet-stream", ".csv" => "text/csv; charset=utf-8", ".log" => "text/plain; charset=utf-8")
 const SIM_OUTPUTS = ["progress.json", "result.json", "meta.json", "frames.bin", "trajectories.csv", "sim.log"]   # καθαρίζονται σε κάθε νέα εκτέλεση
 
-# Έλεγχος κεφαλίδας αρχείου ώστε να βρεθεί ο τύπος της εικόνας που ανέβηκε
-function image_extension(b::Vector{UInt8})
-    length(b) >= 4 || error("το αρχείο είναι κενό ή πολύ μικρό")
-    b[1:4] == UInt8[0x89, 0x50, 0x4e, 0x47] && return "png"
-    b[1:2] == UInt8[0xff, 0xd8] && return "jpg"
-    b[1:2] == UInt8[0x42, 0x4d] && return "bmp"
-    (b[1:4] == UInt8[0x49, 0x49, 0x2a, 0x00] || b[1:4] == UInt8[0x4d, 0x4d, 0x00, 0x2a]) && return "tif"
-    error("μη υποστηριζόμενος τύπος εικόνας (δεκτά: png, jpg, bmp, tif)")
-end
-
 project_dir(id::AbstractString) = (occursin(r"^[0-9a-f]{12}$", id) || error("άκυρο id"); joinpath(DATA_DIR, id))
-
-const SOURCE_CACHE = Dict{String,Matrix{RGB{N0f8}}}()   # αποκωδικοποιημένες εικόνες στη μνήμη
-function load_source(id::AbstractString)
-    get!(SOURCE_CACHE, id) do
-        dir = project_dir(id)
-        file = first(filter(f -> startswith(f, "source."), readdir(dir)))
-        RGB{N0f8}.(load(joinpath(dir, file)))
-    end
-end
 
 # Σώμα του request ως bytes (στο HTTP.jl 2.x το body είναι wrapper)
 function body_bytes(req::HTTP.Request)
@@ -66,65 +45,20 @@ function guarded(f, args...)
     end
 end
 
-# Υπολογισμός grid από την περιοχή: bounding box των πολυγώνων, αναγωγή στην επιθυμητή ανάλυση m/pixel
-function make_grid(polys, img_size, src_mpp::Real, target_mpp::Real)
-    xs = [q[1] for p in polys for q in p.points]
-    ys = [q[2] for p in polys for q in p.points]
-    isempty(xs) && error("δεν έχει οριστεί περιοχή εγκατάστασης")
-    x0, x1 = max(0.0, floor(minimum(xs))), min(Float64(img_size[2]), ceil(maximum(xs)))
-    y0, y1 = max(0.0, floor(minimum(ys))), min(Float64(img_size[1]), ceil(maximum(ys)))
-    (x1 - x0 >= 4 && y1 - y0 >= 4) || error("η περιοχή είναι πολύ μικρή")
-    mpp = max(Float64(target_mpp), src_mpp * max(x1 - x0, y1 - y0) / MAX_GRID_SIDE)   # όριο μεγέθους grid
-    f = src_mpp / mpp
-    return Grid(x0, y0, f, max(4, round(Int, (x1 - x0) * f)), max(4, round(Int, (y1 - y0) * f)), mpp)
-end
-
 grid_json(g::Grid) = Dict("x0" => g.x0, "y0" => g.y0, "f" => g.f, "w" => g.w, "h" => g.h, "mpp" => g.mpp)
 grid_from(j) = Grid(j.x0, j.y0, j.f, j.w, j.h, j.mpp)
-
-# Κομμένο και υπο-δειγματοληπτημένο στο grid κομμάτι της εικόνας
-function crop_to_grid(img, g::Grid)
-    r0, r1 = Int(g.y0) + 1, min(size(img, 1), Int(g.y0) + max(1, round(Int, g.h / g.f)))
-    c0, c1 = Int(g.x0) + 1, min(size(img, 2), Int(g.x0) + max(1, round(Int, g.w / g.f)))
-    return imresize(img[r0:r1, c0:c1], (g.h, g.w))
-end
 
 # τα labels ταξιδεύουν γραμμή-γραμμή (row-major, όπως το canvas): label[row, col] = byte[(row-1)*w + col]
 labels_to_b64(L::Matrix{UInt8}) = base64encode(vec(permutedims(L)))
 labels_from_b64(s::AbstractString, g::Grid) = permutedims(reshape(base64decode(s), g.w, g.h))
 
-# POST /api/upload: ανεβάζει την εικόνα (raw bytes) και επιστρέφει id και διαστάσεις
-function upload_route(req::HTTP.Request)
-    bytes = body_bytes(req)
-    ext = image_extension(bytes)
-    id = randstring("0123456789abcdef", 12)
-    dir = project_dir(id)
-    mkpath(dir)
-    write(joinpath(dir, "source.$ext"), bytes)
-    img = load_source(id)
-    return json_response(Dict("id" => id, "width" => size(img, 2), "height" => size(img, 1)))
-end
-
-# POST /api/propose: αυτόματη πρόταση χάρτη κλάσεων για την περιοχή που όρισε ο χρήστης
-function propose_route(req::HTTP.Request)
-    p = JSON3.read(String(body_bytes(req)))
-    img = load_source(p.id)
-    g = make_grid(p.region, size(img), p.src_mpp, get(p, :target_mpp, DEFAULT_MPP))
-    region = region_mask(p.region, g)
-    gs = get(p, :ground_sample, nothing)
-    sample = gs === nothing ? nothing : to_grid(g, gs)
-    labels = propose_labels(crop_to_grid(img, g), region, g;
-        sensitivity = get(p, :sensitivity, 14.0), min_building_m = get(p, :min_building_m, 8.0), ground_sample = sample)
-    return json_response(Dict("grid" => grid_json(g), "labels" => labels_to_b64(labels), "region_cells" => count(region)))
-end
-
-# POST /api/osm {polygon: [[lat, lon], ...], target_mpp}: νέο project από δεδομένα OpenStreetMap για την περιοχή που ορίστηκε στον χάρτη.
+# POST /api/osm {polygon: [[lat, lon], ...], target_mpp (προαιρετικό)}: νέο project από δεδομένα OpenStreetMap για την περιοχή που ορίστηκε στον χάρτη.
 # Το grid παίζει τον ρόλο της «εικόνας» (x0 = y0 = 0, f = 1)· επιστρέφει χάρτη κλάσεων, περίγραμμα περιοχής και προτάσεις εξόδων.
 function osm_route(req::HTTP.Request)
     p = JSON3.read(String(body_bytes(req)))
     polygon = [(Float64(q[1]), Float64(q[2])) for q in p.polygon]
     length(polygon) >= 3 || error("όρισε την περιοχή στον χάρτη (τουλάχιστον 3 κορυφές)")
-    target = Float64(get(p, :target_mpp, DEFAULT_MPP))
+    target = haskey(p, :target_mpp) && p.target_mpp !== nothing ? Float64(p.target_mpp) : nothing      # χωρίς τιμή: αυτόματη ανάλυση (auto_mpp)
     osm_grid(polygon; target_mpp = target, max_side = MAX_GRID_SIDE)       # έλεγχος μεγέθους πριν το αίτημα δικτύου
     margin = 0.0003                                                        # ~30 m: για να πιάνονται δρόμοι που τέμνουν το όριο
     lats, lons = first.(polygon), last.(polygon)
@@ -292,8 +226,6 @@ end
 @get "/" function(req::HTTP.Request)
     return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8", "Cache-Control" => "no-store"], read(joinpath(FRONTEND_DIR, "index.html")))
 end
-@post "/api/upload" req -> guarded(upload_route, req)
-@post "/api/propose" req -> guarded(propose_route, req)
 @post "/api/build" req -> guarded(build_route, req)
 @post "/api/osm" req -> guarded(osm_route, req)
 @post "/api/run" req -> guarded(run_route, req)
@@ -311,7 +243,8 @@ end
         "Content-Disposition" => "inline; filename=\"$name\""], read(path))
 end
 # Τα αρχεία του frontend διαβάζονται από τον δίσκο σε κάθε αίτημα (χωρίς cache), ώστε οι αλλαγές να φαίνονται αμέσως
-const STATIC_TYPES = Dict(".js" => "text/javascript; charset=utf-8", ".css" => "text/css; charset=utf-8", ".html" => "text/html; charset=utf-8")
+const STATIC_TYPES = Dict(".js" => "text/javascript; charset=utf-8", ".css" => "text/css; charset=utf-8", ".html" => "text/html; charset=utf-8",
+    ".svg" => "image/svg+xml", ".png" => "image/png", ".webmanifest" => "application/manifest+json")
 @get "/static/{name}" function(req::HTTP.Request, name::String)
     path = joinpath(FRONTEND_DIR, name)
     ext = splitext(name)[2]
@@ -319,7 +252,26 @@ const STATIC_TYPES = Dict(".js" => "text/javascript; charset=utf-8", ".css" => "
     return HTTP.Response(200, ["Content-Type" => STATIC_TYPES[ext], "Cache-Control" => "no-store"], read(path))
 end
 
-start(; port::Int = 8080) = serve(host = "127.0.0.1", port = port)
+@get "/favicon.ico" function(req::HTTP.Request)                                 # οι browsers ζητούν πάντα /favicon.ico
+    return HTTP.Response(200, ["Content-Type" => "image/png", "Cache-Control" => "public, max-age=86400"], read(joinpath(FRONTEND_DIR, "favicon-32.png")))
+end
+# Το API και τα αρχεία των projects δεν πρέπει να ευρετηριάζονται. TODO: όταν οριστεί το domain, πρόσθεσε γραμμή Sitemap: (η σελίδα είναι ενιαία, άρα το sitemap ανήκει στο γονικό site)
+@get "/robots.txt" function(req::HTTP.Request)
+    return HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8"], "User-agent: *\nDisallow: /api/\nAllow: /\n")
+end
+
+# Σελίδα 404 για άγνωστες διαδρομές (browser): το API και τα αρχεία επιστρέφουν απλό 404
+function not_found_middleware(handle)
+    return function(req::HTTP.Request)
+        res = handle(req)
+        if res isa HTTP.Response && res.status == 404 && !startswith(req.target, "/api/") && !startswith(req.target, "/static/")
+            return HTTP.Response(404, ["Content-Type" => "text/html; charset=utf-8", "Cache-Control" => "no-store"], read(joinpath(FRONTEND_DIR, "404.html")))
+        end
+        return res
+    end
+end
+
+start(; port::Int = 8080) = serve(host = "127.0.0.1", port = port, middleware = [not_found_middleware])
 
 end # module
 

@@ -3,29 +3,61 @@
 import { post } from './api.js';
 
 const $ = id => document.getElementById(id);
-const FPS = 30;                                         // ταχύτητα αναπαραγωγής 1× (frames ανά δευτερόλεπτο, όπως τα βίντεο των σεναρίων)
+const FPS = 1;                                          // 1 frame = 1 s προσομοίωσης (dt = 1), άρα στο 1× ο χρόνος είναι 1:1 με τον πραγματικό
 
 export const sim = {
   id: null, meta: null, data: null, n: 0, stride: 4, nFrames: 0, frame: 0,
   status: 'none', T: 0, playing: false, follow: true, speed: 1,
-  cm: [], esc: [], dead: [], timer: null, lastTick: 0, nextFetch: 0,
+  cm: [], esc: [], dead: [], timer: null, lastTick: 0, nextFetch: 0, hover: null,
 };
 
 let redraw = () => {};
-export function initSim(redrawFn) { redraw = redrawFn; }
+export function initSim(redrawFn) { redraw = redrawFn; initChartSeek(); }
+
+// Διάγραμμα «Διαφυγή και ακινητοποίηση»: κλικ ή σύρσιμο επιλέγει χρονική στιγμή και μετακινεί το animation εκεί· το hover δείχνει τις τιμές
+const CHART_L = 28, CHART_R = 6;                           // περιθώρια του διαγράμματος (ίδια με drawCharts)
+function initChartSeek() {
+  const canvas = $('chartEsc');
+  let seeking = false;
+  const frameAt = e => {
+    const r = canvas.getBoundingClientRect(), plotW = r.width - CHART_L - CHART_R, T = Math.max(sim.T, sim.nFrames, 1);
+    return Math.max(0, Math.min(sim.nFrames - 1, Math.round((e.clientX - r.left - CHART_L) / plotW * T)));
+  };
+  canvas.addEventListener('pointerdown', e => {
+    if (!sim.nFrames) return;
+    seeking = true; canvas.setPointerCapture(e.pointerId);
+    userScrub(frameAt(e));
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!sim.nFrames) return;
+    sim.hover = frameAt(e);
+    if (seeking) userScrub(sim.hover); else drawCharts();
+  });
+  canvas.addEventListener('pointerup', () => { seeking = false; });
+  canvas.addEventListener('pointerleave', () => { if (!seeking) { sim.hover = null; drawCharts(); } });
+}
+
+// Μήνυμα προόδου/σφάλματος στο simInfo: kind = 'error' | 'loading' | ''
+function info(text, kind = '') {
+  const el = $('simInfo');
+  el.textContent = text;
+  el.classList.toggle('error', kind === 'error');
+  el.classList.toggle('loading', kind === 'loading');
+  el.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+}
 
 const getJson = async url => (await fetch(url + (url.includes('?') ? '&' : '?') + 't=' + Date.now())).json();
 const fileUrl = (id, name) => `/api/files/${id}/${name}`;
 
 export function resetSim() {
   clearInterval(sim.timer);
-  Object.assign(sim, { id: null, meta: null, data: null, n: 0, nFrames: 0, frame: 0, status: 'none', playing: false, follow: true, cm: [], esc: [], dead: [], timer: null });
+  Object.assign(sim, { id: null, meta: null, data: null, n: 0, nFrames: 0, frame: 0, status: 'none', playing: false, follow: true, cm: [], esc: [], dead: [], timer: null, hover: null });
   $('simbar').classList.add('hidden');
   $('simDownloads').classList.add('hidden');
   $('simProgress').classList.add('hidden');
   $('simCancel').classList.add('hidden');
   $('simRun').disabled = false;
-  $('simInfo').textContent = '';
+  info('');
   drawCharts();
 }
 
@@ -33,12 +65,12 @@ export function resetSim() {
 export async function startSim(id, T, seed) {
   resetSim();
   sim.id = id; sim.T = T; sim.status = 'starting';
-  $('simInfo').textContent = 'Εκκίνηση της διεργασίας Julia… (η πρώτη φορά αργεί λίγο λόγω φόρτωσης)';
+  info('Εκκίνηση της διεργασίας Julia… (η πρώτη φορά αργεί λίγο λόγω φόρτωσης)', 'loading');
   try {
     await post('/api/run', { id, T, seed });
   } catch (e) {
     sim.status = 'failed';
-    $('simInfo').textContent = 'Σφάλμα: ' + (e.message || e);
+    info('Σφάλμα: ' + (e.message || e), 'error');
     return;
   }
   $('simRun').disabled = true;
@@ -66,8 +98,8 @@ async function poll() {
     if (!sim.meta) await loadMeta(id);
     if (sim.meta && (st.frame || 0) > sim.nFrames) await loadFrames(id);
   }
-  if (st.status === 'starting') $('simInfo').textContent = 'Φόρτωση του μοντέλου και σχεδιασμός διαδρομών (D* Lite)…';
-  if (st.status === 'running') $('simInfo').textContent = `Τρέχει: ${st.frame} / ${st.T} s · διέφυγαν ${st.escaped ?? 0}`;
+  if (st.status === 'starting') info('Φόρτωση του μοντέλου και σχεδιασμός διαδρομών (D* Lite)…', 'loading');
+  if (st.status === 'running') info(`Τρέχει: ${st.frame} / ${st.T} s · διέφυγαν ${st.escaped ?? 0}`, 'loading');
   if (st.status === 'done') {
     await loadFrames(id);
     finish(await getJson(fileUrl(id, 'result.json')));
@@ -76,7 +108,7 @@ async function poll() {
     $('simRun').disabled = false;
     $('simCancel').classList.add('hidden');
     $('simProgress').classList.add('hidden');
-    $('simInfo').textContent = st.status === 'cancelled' ? 'Ακυρώθηκε.' : 'Αποτυχία: ' + (st.error || '');
+    if (st.status === 'cancelled') info('Ακυρώθηκε.'); else info('Αποτυχία: ' + (st.error || ''), 'error');
   }
 }
 
@@ -86,8 +118,10 @@ function finish(r) {
   $('simCancel').classList.add('hidden');
   $('simProgress').classList.add('hidden');
   const mean = r.mean_escape_time == null ? '–' : r.mean_escape_time.toFixed(0) + ' s';
-  $('simInfo').textContent = `Τέλος: διέφυγαν ${r.escaped} / ${r.n_agents} · ακινητοποιημένοι (TL ≥ 3): ${r.incapacitated} · μέσος χρόνος διαφυγής ${mean} · χρόνος υπολογισμού ${r.total_time} s`
-    + (r.no_path ? ` · ${r.no_path} agents χωρίς διαδρομή` : '');
+  info(`Τέλος: διέφυγαν ${r.escaped} / ${r.n_agents} · ακινητοποιημένοι (TL ≥ 3): ${r.incapacitated} · μέσος χρόνος διαφυγής ${mean} · χρόνος υπολογισμού ${r.total_time} s`
+    + (r.no_path ? ` · ${r.no_path} agents χωρίς διαδρομή` : '')
+    + (r.stuck_events ? ` · ξεκόλλησαν ${r.stuck_agents} agents (${r.stuck_events} παρεμβάσεις: ${r.stuck_events - r.stuck_pushes - r.stuck_teleports} νέα διαδρομή, ${r.stuck_pushes} ώθηση, ${r.stuck_teleports} μετακίνηση στο επόμενο σημείο` +
+        `${r.stuck_unrecoverable ? `, ${r.stuck_unrecoverable} agents χωρίς διαδρομή` : ''})· κυανός δακτύλιος στον χάρτη` : ''));
   $('dlCsv').href = fileUrl(sim.id, 'trajectories.csv');
   $('dlResult').href = fileUrl(sim.id, 'result.json');
   $('simDownloads').classList.remove('hidden');
@@ -137,7 +171,7 @@ async function loadFrames(id) {
     let esc = 0, dead = 0;
     for (let k = 0; k < sim.n; k++) {
       const o = f * per + k * sim.stride;
-      if (sim.data[o + 3] > 0.5) esc++; else if (sim.data[o + 2] >= 3) dead++;
+      if (sim.data[o + 3] === 1) esc++; else if (sim.data[o + 2] >= 3) dead++;       // κατάσταση: 1 = διέφυγε, 2 = μόλις ξεκόλλησε
     }
     sim.esc[f] = esc; sim.dead[f] = dead;
   }
@@ -177,7 +211,7 @@ function tick(now) {
   if (!sim.playing) return;
   const adv = Math.floor((now - sim.lastTick) / 1000 * FPS * sim.speed);
   if (adv >= 1) {
-    sim.lastTick = now;
+    sim.lastTick += adv * 1000 / (FPS * sim.speed);          // κρατά το υπόλοιπο κλάσμα, ώστε να μην μαζεύεται απόκλιση
     const target = sim.frame + adv;
     if (target >= sim.nFrames - 1) {
       setFrame(sim.nFrames - 1);
@@ -213,12 +247,20 @@ export function drawSim(ctx, vp, g, showCm) {
     ctx.beginPath(); ctx.arc(X(e.col), Y(e.row), sim.meta.goal_radius / g.f, 0, 7);
     ctx.strokeStyle = 'rgba(255,59,48,.9)'; ctx.stroke();
   });
-  const r = Math.max(1.5 * px, 0.45 / g.f);              // μικρά εικονίδια: τουλάχιστον 1.5 px ακτίνα, και μεγαλώνουν με το zoom
+  // Κάθε agent σχεδιάζεται ως δίσκος διαμέτρου 1 m (ακτίνα 0.5 m) στην κλίμακα του grid, ώστε η πυκνότητα/συμφόρηση να φαίνεται ρεαλιστικά.
+  // Όταν το zoom είναι τόσο μικρό που ο δίσκος θα ήταν < 0.75 px, σχεδιάζεται με ελάχιστη ακτίνα ώστε να μη χάνεται· με zoom φαίνεται το πραγματικό μέγεθος.
+  const rTrue = 0.5 / g.mpp / g.f;                       // ακτίνα 0.5 m σε μονάδες της εικόνας
+  const r = Math.max(rTrue, 0.75 * px);
   for (let k = 0; k < sim.n; k++) {
     const o = base + k * sim.stride;
+    const state = sim.data[o + 3];                        // 1 = διέφυγε, 2 = μόλις ξεκόλλησε από σκάλωμα (για STUCK_FLASH_S δευτερόλεπτα)
     ctx.beginPath(); ctx.arc(X(sim.data[o]), Y(sim.data[o + 1]), r, 0, 7);
-    ctx.fillStyle = personColor(sim.data[o + 2], sim.data[o + 3] > 0.5); ctx.fill();
-    ctx.lineWidth = 0.6 * px; ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.stroke();
+    ctx.fillStyle = personColor(sim.data[o + 2], state === 1); ctx.fill();
+    ctx.lineWidth = Math.min(0.6 * px, r * 0.2); ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.stroke();
+    if (state === 2) {                                    // ξεκολλημένος: κυανός δακτύλιος γύρω από τον agent
+      ctx.beginPath(); ctx.arc(X(sim.data[o]), Y(sim.data[o + 1]), Math.max(r * 2.6, 4 * px), 0, 7);
+      ctx.lineWidth = 1.6 * px; ctx.strokeStyle = '#22d3ee'; ctx.stroke();
+    }
   }
 }
 
@@ -255,6 +297,12 @@ export function drawCharts() {
       c.strokeStyle = col; c.lineWidth = 2; c.stroke();
     });
     if (sim.nFrames) { const x = L + sim.frame / T * plotW; c.strokeStyle = ink; c.lineWidth = 1; c.beginPath(); c.moveTo(x, 6); c.lineTo(x, 6 + plotH); c.stroke(); }
+    if (sim.hover != null && sim.hover < sim.nFrames) {                       // hover: γραμμή και τιμές στη χρονική στιγμή του ποντικιού
+      const f = sim.hover, x = L + f / T * plotW;
+      c.strokeStyle = '#22d3ee'; c.lineWidth = 1; c.setLineDash([3, 3]); c.beginPath(); c.moveTo(x, 6); c.lineTo(x, 6 + plotH); c.stroke(); c.setLineDash([]);
+      const label = `t = ${f + 1} s · διέφυγαν ${sim.esc[f]} · TL ≥ 3: ${sim.dead[f]}`;
+      c.textAlign = 'right'; c.fillStyle = ink; c.fillText(label, L + plotW - 4, 18);
+    }
     c.textAlign = 'left'; c.fillStyle = '#7f8c9a'; c.fillText('διέφυγαν', L + 4, 18); c.fillStyle = '#dc2626'; c.fillText('TL ≥ 3', L + 58, 18);
   }
   // 2) κατανομή τοξικού φορτίου στο τρέχον frame (bins όπως στο ιστόγραμμα του σεναρίου)
