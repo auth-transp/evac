@@ -69,6 +69,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     # dt: διάρκεια του χρονικού βήματος· seed: σπόρος του RNG· n_agents: πλήθος agents (εδώ 10)
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 1544656427  ## seed for random number generator                     # Define the seed variable as 1544656427
+    make_histogram = false  # true για να δημιουργηθεί το βίντεο ιστογράμματος τοξικού φορτίου (default false, ώστε να μη γεμίζουν οι φάκελοι με αρχεία)
     n_agents = 10                                                        # Define the n_agents variable as 10
     # age_range / mass_range: εύρος τυχαίας ηλικίας (έτη) και μάζας (kg)· speed_range: εύρος της τυχαίας αρχικής ταχύτητας vel
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
@@ -676,7 +677,7 @@ record(fig, video_file, 1:T; framerate=30) do frame
 end  # τέλος του @time block
 
 
-begin  # Δημιουργία βίντεο ιστογράμματος τοξικού φορτίου από το CSV της εκτέλεσης
+if make_histogram  # Δημιουργία βίντεο ιστογράμματος τοξικού φορτίου από το CSV της εκτέλεσης
 
     dt = @isdefined(dt) ? dt : 1.0  # αν δεν υπάρχει ήδη ορισμένο, το dt γίνεται 1.0
     seed_str = @isdefined(seed) ? string(seed) : nothing  # το seed ως string (ή nothing αν δεν υπάρχει)
@@ -799,13 +800,16 @@ begin  # Δημιουργία βίντεο ιστογράμματος τοξικ
 
     println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")  # μήνυμα αποθήκευσης του βίντεο ιστογράμματος
 
+end
+
+begin
     # Καταγραφή της εκτέλεσης στο RunHistory (αρχεία εξόδου και χρόνος υπολογισμού διαδρομών)
     append_run_history(
         scenario = "SCENARIO 4",
         runner_script = "SCENARIOS/SCENARIO 4/Scenario 4.jl",
         csv_file = csv_file,
         mp4_file = video_file,
-        hist_mp4_file = out_file,
+        hist_mp4_file = make_histogram ? out_file : "",  # κενό αν δεν δημιουργήθηκε ιστόγραμμα
         pathfinding_time = total_path_planning,
         run_timestamp = run_timestamp,
     )

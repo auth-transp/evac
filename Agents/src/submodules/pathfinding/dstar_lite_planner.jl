@@ -183,7 +183,7 @@ heap_pop!(h::CellHeap) = _heap_remove_at!(h, 1)
 # γειτονιά του pathfinder (`pf.neighborhood`). Η γειτονιά είναι συμμετρική, άρα
 # Succ(u) = Pred(u)· τα κόστη c(s,u) και c(u,s) υπολογίζονται πάντα χωριστά.
 
-struct WalkableNeighbors{PF<:DStarLite}
+struct WalkableNeighbors{PF<:GridPathfinder}
     pf::PF                  # ο pathfinder (walkmap, neighborhood, periodicity)
     u::Tuple{Int,Int}       # το cell του οποίου τους γείτονες διατρέχουμε
 end
@@ -191,7 +191,7 @@ end
 Base.IteratorSize(::Type{<:WalkableNeighbors}) = Base.SizeUnknown()
 Base.eltype(::Type{<:WalkableNeighbors}) = Tuple{Int,Int}
 
-_periodicity(::DStarLite{D,P}) where {D,P} = P
+_periodicity(::GridPathfinder{D,P}) where {D,P} = P
 
 # επιστρέφει τον επόμενο βατό γείτονα (και το νέο k) ή `nothing` όταν τελειώσουν
 @inline function Base.iterate(it::WalkableNeighbors, k::Int = 1)
@@ -510,22 +510,27 @@ function update_after_cm_change!(
         pl.s_last = pl.s_start                                     # {39''} s_last = s_start
     end
 
-    # {40''-41''}: directed edges incident to changed cells, with c_old
-    # Συλλογή των κατευθυνόμενων ακμών (u,v) που αγγίζουν αλλαγμένα cells, μαζί με το παλιό κόστος c_old.
+    # {40''-47''}: every directed edge (u,v) incident to a changed cell, visited exactly once.
+    # Οι κατευθυνόμενες ακμές (u,v) που αγγίζουν αλλαγμένα cells επεξεργάζονται σε ένα πέρασμα, χωρίς να
+    # αποθηκευτούν: η ακμή x–n (και οι δύο κατευθύνσεις) έχει ήδη επεξεργαστεί αν το n είναι αλλαγμένο cell
+    # που επεξεργάστηκε νωρίτερα (`done`). Η σειρά επεξεργασίας είναι ίδια με την προηγούμενη υλοποίηση
+    # (Set + λίστα ακμών), οπότε και το αποτέλεσμα είναι ίδιο.
     wm = pl.pf.walkmap
-    seen = Set{NTuple{2,Tuple{Int,Int}}}()                  # αποφυγή διπλής επεξεργασίας της ίδιας ακμής
-    edges = Tuple{Tuple{Int,Int},Tuple{Int,Int},Float64}[]  # (u, v, c_old)
+    done = falses(size(wm))                   # αλλαγμένα cells των οποίων οι ακμές έχουν ήδη επεξεργαστεί
     for x in changed_cells
         wm[x...] || continue                  # a blocked cell has no edges
-        for n in _neighbors(pl, x), e in ((x, n), (n, x))   # και οι δύο κατευθύνσεις x→n, n→x
-            e in seen && continue
-            push!(seen, e)
-            push!(edges, (e[1], e[2], _known_cost(pl, e[1], e[2])))   # {41''} c_old = c(u,v)
+        done[x...] && continue                # διπλή εμφάνιση του ίδιου cell: οι ακμές του έχουν ήδη επεξεργαστεί
+        for n in _neighbors(pl, x)
+            done[n...] && continue            # η ακμή x–n επεξεργάστηκε ήδη από την πλευρά του n
+            _update_changed_edge!(pl, x, n)   # κατεύθυνση x→n
+            _update_changed_edge!(pl, n, x)   # κατεύθυνση n→x
         end
+        done[x...] = true
     end
 
     # {42''}: adopt the new costs
-    # Ενημέρωση του αντιγράφου `known_pmap` με τις νέες τιμές (η «Update the edge cost c(u,v)» του paper)
+    # Ενημέρωση του αντιγράφου `known_pmap` με τις νέες τιμές (η «Update the edge cost c(u,v)» του paper).
+    # Γίνεται μετά το πέρασμα, ώστε κατά τη διάρκειά του το `known_pmap` να δίνει το παλιό κόστος c_old.
     if pl.known_pmap !== nothing
         live = pl.pf.cost_metric.pmap
         for x in changed_cells
@@ -533,20 +538,23 @@ function update_after_cm_change!(
         end
     end
 
-    # Επεξεργασία κάθε αλλαγμένης ακμής {43''-47''}: διορθώνει το rhs(u) και ενημερώνει την U
-    for (u, v, c_old) in edges
-        c_new = delta_cost(pl.pf, u, v)       # το νέο κόστος c(u,v)
-        c_old == c_new && continue            # {40''} only changed edges
-        if c_old > c_new                                                   # {43''} η ακμή έγινε φθηνότερη
-            u != pl.goal && (pl.rhs[u...] = min(pl.rhs[u...], c_new + pl.g[v...]))  # {44''} rhs(u) = min(rhs(u), c(u,v) + g(v))
-        elseif pl.rhs[u...] == c_old + pl.g[v...]                          # {45''} η ακμή έγινε ακριβότερη και το rhs(u) στηριζόταν σε αυτήν
-            u != pl.goal && (pl.rhs[u...] = _min_succ(pl, u))              # {46''} rhs(u) = min_{s'∈Succ(u)} c(u,s') + g(s')
-        end
-        update_vertex!(pl, u)                                              # {47''}
-    end
-
     compute_shortest_path!(pl)                                             # {48''} επανυπολογισμός μόνο όπου χρειάζεται
     return pl
+end
+
+# Επεξεργασία μίας κατευθυνόμενης ακμής (u,v) που αγγίζει αλλαγμένο cell {40''-47''}: c_old από το `known_pmap`
+# (που δεν έχει ακόμη ενημερωθεί) {41''}, c_new από το ζωντανό penalty map, και διόρθωση του rhs(u).
+@inline function _update_changed_edge!(pl::DStarLitePlanner, u::Tuple{Int,Int}, v::Tuple{Int,Int})
+    c_old = _known_cost(pl, u, v)                                          # {41''} c_old = c(u,v)
+    c_new = delta_cost(pl.pf, u, v)                                        # το νέο κόστος c(u,v)
+    c_old == c_new && return nothing                                       # {40''} only changed edges
+    if c_old > c_new                                                       # {43''} η ακμή έγινε φθηνότερη
+        u != pl.goal && (pl.rhs[u...] = min(pl.rhs[u...], c_new + pl.g[v...]))  # {44''} rhs(u) = min(rhs(u), c(u,v) + g(v))
+    elseif pl.rhs[u...] == c_old + pl.g[v...]                              # {45''} η ακμή έγινε ακριβότερη και το rhs(u) στηριζόταν σε αυτήν
+        u != pl.goal && (pl.rhs[u...] = _min_succ(pl, u))                  # {46''} rhs(u) = min_{s'∈Succ(u)} c(u,s') + g(s')
+    end
+    update_vertex!(pl, u)                                                  # {47''}
+    return nothing
 end
 
 """

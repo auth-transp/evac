@@ -210,7 +210,7 @@ function concentration_at(c::SlabCloud, x::Float64, y::Float64, z::Float64, st)
     fy == 0.0 && return 0.0
     s = sqrt(2.0) * sig
     fz = exp(-((z - zc) / s)^2) + exp(-((z + zc) / s)^2) # (exp(−za²) + exp(−zb²))
-    return cc * fx * fy * fz
+    return min(1.0, cc * fx * fy * fz)                  # το SLAB επιτρέπει μέγιστο 1,0 (κλάσμα όγκου): η κορυφή του Gaussian προφίλ μπορεί να το ξεπεράσει (σ. 15 του εγχειριδίου)
 end
 
 # Συγκέντρωση σε ppm (κατά όγκο) στο σημείο (x, y, z) και χρόνο t· x κατά τον άνεμο, y εγκάρσια, z ύψος (m)

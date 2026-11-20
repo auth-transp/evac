@@ -53,6 +53,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    make_histogram = false  # true για να δημιουργηθεί το βίντεο ιστογράμματος τοξικού φορτίου (default false, ώστε να μη γεμίζουν οι φάκελοι με αρχεία)
     run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")
     n_agents = 50                                                       # Define the n_agents variable as 100
     toxicity_rate = 0.07                                               # Define the toxicity_rate variable as 0.07
@@ -425,7 +426,7 @@ end
 
 
 
-begin
+if make_histogram
 
     dt = @isdefined(dt) ? dt : 1.0
     seed_str = @isdefined(seed) ? string(seed) : nothing

@@ -72,6 +72,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0                            # συντελεστής μετατροπής μέτρων σε pixels του χάρτη
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    make_histogram = false  # true για να δημιουργηθεί το βίντεο ιστογράμματος τοξικού φορτίου (default false, ώστε να μη γεμίζουν οι φάκελοι με αρχεία)
     run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")    # χρονική σήμανση της εκτέλεσης (για τα ονόματα των αρχείων εξόδου)
     n_agents = 1                                                        # Single agent, spawned at agent_spawn_pixel and evacuating towards the exits (dests)
     agent_spawn_pixel = (10.0, 304.0)                                  # fixed spawn position (x, y) of the agent, in map pixels
@@ -510,7 +511,7 @@ end
 end
 
 
-begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βίντεο) από το CSV της προσομοίωσης
+if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά frame (βίντεο) από το CSV της προσομοίωσης
 
     dt = @isdefined(dt) ? dt : 1.0                                  # βήμα χρόνου (αν δεν έχει οριστεί, 1 s)
     seed_str = @isdefined(seed) ? string(seed) : nothing            # seed ως string για το όνομα αρχείου
@@ -630,13 +631,16 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
 
     println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")
 
+end
+
+begin
     # καταγραφή της εκτέλεσης (αρχεία εξόδου, χρόνος pathfinding, timestamp) στο RunHistory
     append_run_history(
         scenario = "SCENARIO 2",
         runner_script = "SCENARIOS/SCENARIO 3/Scenario 2.jl",
         csv_file = csv_file,
         mp4_file = video_file,
-        hist_mp4_file = out_file,
+        hist_mp4_file = make_histogram ? out_file : "",  # κενό αν δεν δημιουργήθηκε ιστόγραμμα
         pathfinding_time = path_planning_time[],
         run_timestamp = run_timestamp,
     )

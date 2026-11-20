@@ -73,6 +73,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     const METERS_TO_PIXELS = 723.37 / 2500.0                            # συντελεστής μετατροπής μέτρων σε pixels του χάρτη
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
+    make_histogram = false  # true για να δημιουργηθεί το βίντεο ιστογράμματος τοξικού φορτίου (default false, ώστε να μη γεμίζουν οι φάκελοι με αρχεία)
     n_agents = 100                                                        # Define the n_agents variable as 100
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
@@ -151,30 +152,25 @@ end
 
 # Μετακινεί τον agent κατά μήκος ενός προϋπολογισμένου μονοπατιού (λίστα από grid cells), κάνοντας ένα βήμα ταχύτητας `speed` για χρονικό διάστημα `dt` ανά κλήση.
 function move_along_precomputed_path!(agent::AgentEscapes, speed, dt)
-    # Αν δεν υπάρχει μονοπάτι (άδειο path), δεν κάνει τίποτα
-    isempty(agent.path) && return
-
-    # επόμενος grid στόχος: το πρώτο cell του path είναι ο τρέχων στόχος
-    cell = agent.path[1]
-    target = SVector{2,Float64}(cell[1], cell[2])
-
-    # διάνυσμα και απόσταση από την τρέχουσα θέση προς τον στόχο
-    dir = target .- agent.pos
-    dist = norm(dir)
-
-    # dist == 0: already on waypoint; must pop without dividing (speed==0 ⇒ 0 < speed*dt is false and 0/0 → NaN)
-    # Αν ο agent είναι ήδη στον στόχο (dist == 0) ή τον φτάνει μέσα σε αυτό το βήμα
-    # (dist < speed*dt), τον τοποθετεί ακριβώς πάνω του (χωρίς overshoot).
-    # Το iszero(dist) είναι απαραίτητο: με speed == 0 η συνθήκη 0 < 0 είναι ψευδής
-    # και η διαίρεση dir/dist θα έδινε 0/0 → NaN.
-    if iszero(dist) || dist < speed * dt
-        agent.pos = target
-        popfirst!(agent.path)   # πήγες στο cell: αφαιρείται ώστε την επόμενη κλήση να στοχεύσει το επόμενο
-    else
-        # Διαφορετικά κινείται κατά speed*dt προς τον στόχο (dir/dist = μοναδιαίο διάνυσμα κατεύθυνσης)
-        agent.pos += (dir / dist) * speed * dt
+    # Ο agent καλύπτει ακριβώς απόσταση speed*dt ανά βήμα: όταν φτάνει σε ένα waypoint, το υπόλοιπο της απόστασης
+    # συνεχίζει προς τα επόμενα (ίδια συμπεριφορά με το move_along_route! του A* στο Agents.jl). Χωρίς αυτή τη μεταφορά
+    # ο agent θα σταματούσε σε κάθε waypoint και θα έχανε το υπόλοιπο, κινούμενος ~10-15% πιο αργά από το μοντέλο ταχύτητας.
+    remaining = speed * dt                                                                          # απόσταση που απομένει να καλυφθεί σε αυτό το βήμα
+    pos = agent.pos                                                                                 # τρέχουσα θέση
+    while !isempty(agent.path) && remaining > 0                                                     # όσο υπάρχουν waypoints και απομένει απόσταση (με speed == 0 δεν κινείται)
+        cell = agent.path[1]                                                                        # επόμενο waypoint (grid cell)
+        target = SVector{2,Float64}(cell[1], cell[2])                                               # θέση του waypoint
+        d = norm(target .- pos)                                                                     # απόσταση ως το waypoint
+        if d <= remaining                                                                           # το waypoint φτάνεται μέσα σε αυτό το βήμα (και όταν d == 0: χωρίς διαίρεση με 0)
+            pos = target                                                                            # ο agent φτάνει στο waypoint
+            remaining -= d                                                                          # η απόσταση που περισσεύει συνεχίζει προς το επόμενο waypoint
+            popfirst!(agent.path)                                                                   # το waypoint αφαιρείται από το path
+        else
+            pos = pos .+ (target .- pos) ./ d .* remaining                                          # κίνηση κατά την απόσταση που απομένει προς το waypoint (d > remaining > 0)
+            remaining = 0.0                                                                         # η απόσταση του βήματος εξαντλήθηκε
+        end
     end
-    # Σημείωση: ολοκληρώνεται το πολύ ένα waypoint ανά κλήση· το περισσεύον βήμα δεν μεταφέρεται στο επόμενο cell.
+    agent.pos = pos                                                                                 # νέα θέση του agent
 end
 
 
@@ -794,7 +790,7 @@ end
 end
 
 
-begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βίντεο) από το CSV της προσομοίωσης
+if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά frame (βίντεο) από το CSV της προσομοίωσης
 
     dt = @isdefined(dt) ? dt : 1.0                                  # βήμα χρόνου (αν δεν έχει οριστεί, 1 s)
     seed_str = @isdefined(seed) ? string(seed) : nothing            # seed ως string για το όνομα αρχείου
@@ -913,13 +909,16 @@ begin   # Ιστόγραμμα τοξικού φορτίου ανά frame (βί�
 
     println("Βίντεο με ξεχωριστά bins για 0 & 3 και εσωτερικά ανά 0.5 σώθηκε ως: $out_file")
 
+end
+
+begin
     # καταγραφή της εκτέλεσης (αρχεία εξόδου, χρόνος pathfinding, timestamp) στο RunHistory
     append_run_history(
         scenario = "SCENARIO 3",
         runner_script = "SCENARIOS/SCENARIO 3/DStarLite - Scenario 3.jl",
         csv_file = csv_file,
         mp4_file = video_file,
-        hist_mp4_file = out_file,
+        hist_mp4_file = make_histogram ? out_file : "",  # κενό αν δεν δημιουργήθηκε ιστόγραμμα
         pathfinding_time = total_path_planning,
         run_timestamp = run_timestamp,
     )

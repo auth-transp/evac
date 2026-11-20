@@ -43,6 +43,9 @@ include("dstar_lite.jl")
 include("dstar_lite_planner.jl")
 include("dstar_lite_grid.jl")
 include("dstar_lite_continuous.jl")
+include("lpa_star.jl")
+include("lpa_star_planner.jl")
+include("lpa_star_continuous.jl")
 include("social_force.jl")
 include("social_force_continuous.jl")
 
@@ -65,6 +68,8 @@ export CostMetric,
     DStarLite,
     GridPathfinder,
     DStarLitePlanner,
+    LPAStar,
+    LPAStarPlanner,
     init_planner,
     update_after_cm_change!,
     extract_path,

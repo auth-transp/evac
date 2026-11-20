@@ -19,9 +19,9 @@ const FRONTEND_DIR = joinpath(@__DIR__, "frontend")
 const DATA_DIR = joinpath(@__DIR__, "data")             # αποτελέσματα ανά project και cache του Overpass (δεν μπαίνει στο git)
 const MAX_GRID_SIDE = 1600                              # ανώτατη διάσταση του grid ώστε ο D* Lite να μένει γρήγορος
 # αρχεία ενός project που επιτρέπεται να κατεβάσει ο browser (heightmap/config από το build, τα υπόλοιπα από την προσομοίωση)
-const SERVED_FILES = r"^(heightmap\.png|spawn_mask\.png|config\.json|meta\.json|progress\.json|result\.json|frames\.bin|trajectories\.csv|sim\.log|cm_[1-7]\.png)$"
-const CONTENT_TYPES = Dict(".png" => "image/png", ".json" => "application/json", ".bin" => "application/octet-stream", ".csv" => "text/csv; charset=utf-8", ".log" => "text/plain; charset=utf-8")
-const SIM_OUTPUTS = ["progress.json", "result.json", "meta.json", "frames.bin", "trajectories.csv", "sim.log"]   # καθαρίζονται σε κάθε νέα εκτέλεση
+const SERVED_FILES = r"^(heightmap\.png|spawn_mask\.png|config\.json|meta\.json|progress\.json|result\.json|frames\.bin|trajectories\.csv|sim\.log|animation\.mp4|video_progress\.json|cm_[1-7]\.png)$"
+const CONTENT_TYPES = Dict(".png" => "image/png", ".json" => "application/json", ".bin" => "application/octet-stream", ".csv" => "text/csv; charset=utf-8", ".log" => "text/plain; charset=utf-8", ".mp4" => "video/mp4")
+const SIM_OUTPUTS = ["progress.json", "result.json", "meta.json", "frames.bin", "trajectories.csv", "sim.log", "animation.mp4", "video_progress.json"]   # καθαρίζονται σε κάθε νέα εκτέλεση
 
 project_dir(id::AbstractString) = (occursin(r"^[0-9a-f]{12}$", id) || error("άκυρο id"); joinpath(DATA_DIR, id))
 
@@ -223,12 +223,48 @@ function job_cancel_route(id::AbstractString)
     return json_response(Dict("status" => "cancelled"))
 end
 
+# POST /api/video {id}: φτιάχνει το animation.mp4 από τα frames ενός ολοκληρωμένου project (ξεχωριστή διεργασία, όπως η προσομοίωση)
+const VIDEO_JOBS = Dict{String,Base.Process}()
+function video_route(req::HTTP.Request)
+    p = JSON3.read(String(body_bytes(req)))
+    dir = project_dir(p.id)
+    isfile(joinpath(dir, "frames.bin")) && isfile(joinpath(dir, "meta.json")) || error("δεν υπάρχουν αποτελέσματα προσομοίωσης για αυτό το project")
+    fps = Int(get(p, :fps, 30))
+    fps in (1, 2, 30) || error("άκυρο fps (επιτρέπονται 1, 2, 30)")
+    old = get(VIDEO_JOBS, p.id, nothing)
+    old !== nothing && process_running(old) && return json_response(Dict("id" => p.id, "status" => "running"))   # ήδη σε εξέλιξη
+    rm(joinpath(dir, "animation.mp4"); force = true)
+    write(joinpath(dir, "video_progress.json"), JSON3.write((; status = "starting", frame = 0, T = 0)))
+    log = open(joinpath(dir, "video.log"), "w")
+    cmd = `$(Base.julia_cmd()) --project=$(@__DIR__) $(joinpath(@__DIR__, "video_worker.jl")) $dir $fps`
+    VIDEO_JOBS[p.id] = run(pipeline(cmd; stdout = log, stderr = log); wait = false)
+    close(log)
+    return json_response(Dict("id" => p.id, "status" => "starting"))
+end
+
+# GET /api/video/{id}: κατάσταση της εξαγωγής βίντεο
+function video_status_route(id::AbstractString)
+    file = joinpath(project_dir(id), "video_progress.json")
+    isfile(file) || return json_response(Dict("status" => "none"))
+    d = Dict{String,Any}(String(k) => v for (k, v) in pairs(JSON3.read(read(file, String))))
+    proc = get(VIDEO_JOBS, id, nothing)
+    if d["status"] in ("starting", "running") && (proc === nothing || !process_running(proc))
+        d["status"] = "failed"
+        d["error"] = "η διεργασία τερματίστηκε"
+    end
+    return json_response(d)
+end
+
 @get "/" function(req::HTTP.Request)
     return HTTP.Response(200, ["Content-Type" => "text/html; charset=utf-8", "Cache-Control" => "no-store"], read(joinpath(FRONTEND_DIR, "index.html")))
 end
 @post "/api/build" req -> guarded(build_route, req)
 @post "/api/osm" req -> guarded(osm_route, req)
 @post "/api/run" req -> guarded(run_route, req)
+@post "/api/video" req -> guarded(video_route, req)
+@get "/api/video/{id}" function(req::HTTP.Request, id::String)
+    return guarded(video_status_route, id)
+end
 @get "/api/jobs/{id}" function(req::HTTP.Request, id::String)
     return guarded(job_status_route, id)
 end

@@ -1,6 +1,6 @@
 # Δημιουργία των εισόδων SLAB για το σενάριο ΠΥΚΝΟΥ acid gas (μίγμα H2S + CO2, βαρύτερο από τον αέρα) και, προαιρετικά, εκτέλεση του SLAB.
 #
-# ΥΠΟΘΕΣΕΙΣ (δεν προέρχονται από δεδομένα της εγκατάστασης· αλλάζουν με επιλογές στη γραμμή εντολών):
+# ΥΠΟΘΕΣΕΙΣ (δεν προέρχονται από δεδομένα της εγκατάστασης· κάθε μία αλλάζει με επιλογή στη γραμμή εντολών, βλ. «Χρήση» παρακάτω):
 #   - σύνθεση: x_H2S = 40% mol H2S, υπόλοιπο CO2 (--xh2s=…)· τυπικό εύρος αερίου από μονάδα αφαίρεσης οξέων, ΟΧΙ μετρημένη σύνθεση Qatargas
 #   - ρυθμός διαρροής: ίδιος ρυθμός ΜΑΖΑΣ H2S με τα σενάρια sour gas της ομάδας (0,77% w/w H2S σε μεθάνιο): μικρή 100 kg/s × 0,77% = 0,77 kg/s H2S (600 s),
 #     μεγάλη 11.500 kg/s × 0,77% = 88,55 kg/s H2S (3600 s). Έτσι η σύγκριση sour gas (ελαφρύ) έναντι acid gas (πυκνό) γίνεται για την ίδια τοξική εκπομπή.
@@ -11,8 +11,18 @@
 # Το SLAB δίνει κλάσμα όγκου του ΣΥΝΟΛΟΥ του εκλυόμενου μίγματος· για συγκέντρωση H2S πολλαπλασιάζεται με x_H2S (βλ. --scale στο slab_to_concentration_maps.jl).
 #
 # Χρήση από τη ρίζα του repo (μόνο standard library):
-#   julia scripts/slab_acid_gas_cases.jl <φάκελος_εξόδου> [--xh2s=0.40] [--stabs=C,D,F] [--winds=3,5] [--slab=C:/path/Slab.exe]
-# Χωρίς --slab γράφονται μόνο τα αρχεία <case>.in και το cases.tsv· με --slab εκτελείται το SLAB για κάθε περίπτωση και αποθηκεύεται το <case>.predict.
+#   julia scripts/slab_acid_gas_cases.jl <φάκελος_εξόδου> [επιλογές]
+# Επιλογές (όλες προαιρετικές, εντός παρένθεσης η προεπιλογή):
+#   --xh2s=      μοριακό κλάσμα H2S στο μίγμα H2S + CO2 (0.40)
+#   --releases=  διαρροές ως όνομα:ρυθμός_H2S_kg/s:διάρκεια_s, χωρισμένες με κόμμα (small:0.77:600,large:88.55:3600)
+#   --stabs=     κατηγορίες σταθερότητας A–F (C,D,F)          --winds=  ταχύτητες ανέμου στο ύψος za, m/s (3,5)
+#   --z0=        τραχύτητα εδάφους, m (0.1)                   --za=     ύψος μέτρησης ανέμου, m (10)
+#   --ta=        θερμοκρασία περιβάλλοντος, K (300.15)         --rh=     σχετική υγρασία, % (50)
+#   --tav=       χρόνος μέσου όρου, s (10)                    --xffm=   μέγιστη απόσταση, m (5000)
+#   --hs=        ύψος κέντρου του πίδακα, m (1)
+#   --slab=      διαδρομή του Slab.exe· αν δοθεί, το SLAB εκτελείται για κάθε περίπτωση και αποθηκεύεται το <case>.predict
+# Χωρίς --slab γράφονται μόνο τα αρχεία <case>.in και το cases.tsv (που καταγράφει και τις τιμές όλων των παραπάνω παραμέτρων).
+# Δεν αλλάζουν από τη γραμμή εντολών (θέλουν αλλαγή κώδικα): τα cp των συστατικών, ο τύπος πηγής (οριζόντιος πίδακας) και ο τρόπος υπολογισμού του όρου πηγής.
 
 module AcidGasCases
 
@@ -54,10 +64,10 @@ const RELEASES = ["small" => (100.0 * 0.0077, 600.0), "large" => (11500.0 * 0.00
 
 # Όλες οι περιπτώσεις: (όνομα, παράμετροι SLAB, περιγραφή)
 function release_cases(; xh2s = 0.40, stabs = ["C", "D", "F"], winds = [3.0, 5.0], T0 = 300.15, rh = 50.0, z0 = 0.1, za = 10.0,
-                       tav = 10.0, xffm = 5000.0, hs = 1.0)
+                       tav = 10.0, xffm = 5000.0, hs = 1.0, releases = RELEASES)
     mix = mixture(xh2s)
     cases = NamedTuple[]
-    for (rname, (qh2s, tsd)) in RELEASES, st in stabs, u in winds
+    for (rname, (qh2s, tsd)) in releases, st in stabs, u in winds
         st == "F" && u > 3.5 && continue                                                 # φυσικά ασυνεπής συνδυασμός (F απαιτεί ασθενή άνεμο)
         qs = qh2s / mix.w_h2s                                                            # ολική παροχή μάζας acid gas ώστε η παροχή H2S να είναι qh2s
         src = choked_pseudo_source(qs, mix, T0)
@@ -89,27 +99,38 @@ function run_slab(exe::AbstractString, text::AbstractString)
 end
 
 function main(args)
-    isempty(args) && error("Χρήση: julia scripts/slab_acid_gas_cases.jl <φάκελος_εξόδου> [--xh2s=…] [--stabs=C,D,F] [--winds=3,5] [--slab=<Slab.exe>]")
+    isempty(args) && error("Χρήση: julia scripts/slab_acid_gas_cases.jl <φάκελος_εξόδου> [--xh2s= --releases= --stabs= --winds= --z0= --za= --ta= --rh= --tav= --xffm= --hs= --slab=] (βλ. την κεφαλίδα του αρχείου)")
     outdir = args[1]
     opts = Dict{String,String}()
+    known = ("xh2s", "releases", "stabs", "winds", "z0", "za", "ta", "rh", "tav", "xffm", "hs", "slab")
     for a in args[2:end]
         m = match(r"^--([a-z0-9]+)=(.*)$", a)
         m === nothing && error("Άγνωστο όρισμα: $a")
-        m.captures[1] in ("xh2s", "stabs", "winds", "slab") || error("Άγνωστη επιλογή --$(m.captures[1])")
+        m.captures[1] in known || error("Άγνωστη επιλογή --$(m.captures[1]) (έγκυρες: $(join(known, ", ")))")
         opts[m.captures[1]] = m.captures[2]
     end
-    xh2s = haskey(opts, "xh2s") ? parse(Float64, opts["xh2s"]) : 0.40
+    num(k, default) = haskey(opts, k) ? parse(Float64, opts[k]) : default                # αριθμητική επιλογή ή προεπιλογή
+    xh2s = num("xh2s", 0.40)
     stabs = haskey(opts, "stabs") ? String.(split(opts["stabs"], ",")) : ["C", "D", "F"]
     winds = haskey(opts, "winds") ? parse.(Float64, split(opts["winds"], ",")) : [3.0, 5.0]
     all(s -> haskey(STAB_CODE, s), stabs) || error("Άγνωστη κατηγορία σταθερότητας στο --stabs=$(opts["stabs"])")
+    releases = RELEASES
+    if haskey(opts, "releases")                                                           # μορφή όνομα:ρυθμός_H2S:διάρκεια, χωρισμένα με κόμμα
+        releases = map(split(opts["releases"], ",")) do item
+            f = split(item, ":")
+            length(f) == 3 || error("Η διαρροή «$item» πρέπει να έχει τη μορφή όνομα:ρυθμός_H2S_kg/s:διάρκεια_s")
+            String(f[1]) => (parse(Float64, f[2]), parse(Float64, f[3]))
+        end
+    end
     mkpath(outdir)
-    cases = release_cases(; xh2s, stabs, winds)
+    cases = release_cases(; xh2s, stabs, winds, releases, z0 = num("z0", 0.1), za = num("za", 10.0), T0 = num("ta", 300.15), rh = num("rh", 50.0),
+                          tav = num("tav", 10.0), xffm = num("xffm", 5000.0), hs = num("hs", 1.0))
     open(joinpath(outdir, "cases.tsv"), "w") do tsv
-        println(tsv, "case\trelease\tstab\twind_ms\tqh2s_kgs\tqs_kgs\tduration_s\txh2s\tM_kgmol\tTs_K\tus_ms\trhos_kgm3\tarea_m2")
+        println(tsv, "case\trelease\tstab\twind_ms\tqh2s_kgs\tqs_kgs\tduration_s\txh2s\tM_kgmol\tTs_K\tus_ms\trhos_kgm3\tarea_m2\tz0_m\tza_m\tta_K\trh_pct\ttav_s\txffm_m\ths_m")
         for c in cases
             write(joinpath(outdir, c.name * ".in"), case_input_text(c))
-            @printf(tsv, "%s\t%s\t%s\t%g\t%.4g\t%.5g\t%g\t%g\t%.5f\t%.2f\t%.2f\t%.4f\t%.5f\n", c.name, c.release, c.stab, c.wind, c.qh2s, c.qs,
-                    c.tsd, c.xh2s, c.mix.M, c.src.Ts, c.src.us, c.src.rhos, c.src.area)
+            @printf(tsv, "%s\t%s\t%s\t%g\t%.4g\t%.5g\t%g\t%g\t%.5f\t%.2f\t%.2f\t%.4f\t%.5f\t%g\t%g\t%g\t%g\t%g\t%g\t%g\n", c.name, c.release, c.stab, c.wind, c.qh2s, c.qs,
+                    c.tsd, c.xh2s, c.mix.M, c.src.Ts, c.src.us, c.src.rhos, c.src.area, c.z0, c.za, c.T0, c.rh, c.tav, c.xffm, c.hs)
             if haskey(opts, "slab")
                 write(joinpath(outdir, c.name * ".predict"), run_slab(opts["slab"], case_input_text(c)))
             end

@@ -1,6 +1,7 @@
 [deps]
 Agents = "ce4e620d-ede0-4578-81fb-7fd4ac0aacbc"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+FFMPEG_jll = "b22a6f82-2f65-5046-a5b2-351ab43fb4e5"
 FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 ImageIO = "82e4d734-157c-48bb-816b-45c225c6df19"

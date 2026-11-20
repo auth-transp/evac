@@ -1,7 +1,7 @@
 # ContinuousSpace API for the social force model: desired directions from the pathfinders, the total social force
 # on an agent (eq 8-9 του paper) and the synchronous time step (eq 10-12).
 # Το αρχείο αυτό είναι ο προσαρμογέας του ABM: τα μαθηματικά βρίσκονται στο social_force.jl. Ο pathfinder (A*, D* Lite,
-# FlowField, σημείο ή συνάρτηση) δίνει μόνο την επιθυμητή κατεύθυνση e_α (eq 1)· τη θέση την ορίζει το μοντέλο δυνάμεων.
+# LPA*, FlowField, σημείο ή συνάρτηση) δίνει μόνο την επιθυμητή κατεύθυνση e_α (eq 1)· τη θέση την ορίζει το μοντέλο δυνάμεων.
 
 # μετατροπή του Vec2 στον τύπο θέσης/ταχύτητας του agent (SVector ή NTuple)
 @inline to_agent_vec(::Type{T}, x::Vec2) where {T<:Tuple} = Tuple(x)
@@ -53,7 +53,7 @@ end
     desired_direction(agent, model, destination, sf::SocialForce)
 Return the desired direction `e_α` (a unit `SVector{2}`, or zero if the agent has nowhere to go) of `agent`.
 Methods:
-* `destination::Union{AStar,DStarLite}`: towards the next waypoint of the path stored by [`plan_route!`](@ref);
+* `destination::Union{AStar,DStarLite,LPAStar}`: towards the next waypoint of the path stored by [`plan_route!`](@ref);
   waypoints closer than `sf.waypoint_radius` are dropped (the agent decelerates to rest after the last one).
 * `destination::FlowField`: the (interpolated) flow direction at the agent's position.
 * `destination::Union{NTuple{2},SVector{2}}`: straight towards that point (eq 1 for a single target point).
@@ -61,7 +61,7 @@ Methods:
 """
 function desired_direction end
 
-function desired_direction(agent, model, pathfinder::Union{AStar{2},DStarLite{2}}, sf::SocialForce)
+function desired_direction(agent, model, pathfinder::Union{AStar{2},DStarLite{2},LPAStar{2}}, sf::SocialForce)
     path = get(pathfinder.agent_paths, Agents.getid(agent), nothing)             # η διαδρομή του agent (αν έχει σχεδιαστεί)
     isnothing(path) && return zero(Vec2)
     pos = Vec2(agent.pos)

@@ -12,7 +12,7 @@ export const sim = {
 };
 
 let redraw = () => {};
-export function initSim(redrawFn) { redraw = redrawFn; initChartSeek(); }
+export function initSim(redrawFn) { redraw = redrawFn; initChartSeek(); $('dlVideo').addEventListener('click', exportVideo); }
 
 // Διάγραμμα «Διαφυγή και ακινητοποίηση»: κλικ ή σύρσιμο επιλέγει χρονική στιγμή και μετακινεί το animation εκεί· το hover δείχνει τις τιμές
 const CHART_L = 28, CHART_R = 6;                           // περιθώρια του διαγράμματος (ίδια με drawCharts)
@@ -124,7 +124,35 @@ function finish(r) {
         `${r.stuck_unrecoverable ? `, ${r.stuck_unrecoverable} agents χωρίς διαδρομή` : ''})· κυανός δακτύλιος στον χάρτη` : ''));
   $('dlCsv').href = fileUrl(sim.id, 'trajectories.csv');
   $('dlResult').href = fileUrl(sim.id, 'result.json');
+  $('videoStatus').textContent = '';
   $('simDownloads').classList.remove('hidden');
+}
+
+// Το mp4 φτιάχνεται στον server (video_worker.jl) από τα frames· εδώ ξεκινά, ακολουθείται η πρόοδος και στο τέλος κατεβαίνει
+async function exportVideo() {
+  const id = sim.id, btn = $('dlVideo'), out = $('videoStatus');
+  if (!id) return;
+  btn.disabled = $('videoFps').disabled = true;
+  out.textContent = 'Εκκίνηση…';
+  try {
+    await post('/api/video', { id, fps: Number($('videoFps').value) });
+    for (;;) {
+      await new Promise(r => setTimeout(r, 1000));
+      const st = await (await fetch(`/api/video/${id}`)).json();
+      if (st.status === 'done') {
+        out.textContent = `Έτοιμο (${(st.bytes / 1e6).toFixed(1)} MB)`;
+        const a = document.createElement('a');
+        a.href = fileUrl(id, 'animation.mp4') + '?t=' + Date.now(); a.download = 'animation.mp4';
+        document.body.appendChild(a); a.click(); a.remove();
+        break;
+      }
+      if (st.status === 'failed') throw new Error(st.error || 'αποτυχία');
+      out.textContent = st.T ? `Δημιουργία βίντεο… ${Math.round(100 * st.frame / st.T)}%` : 'Δημιουργία βίντεο…';
+    }
+  } catch (e) {
+    out.textContent = 'Σφάλμα: ' + (e.message || e);
+  }
+  btn.disabled = $('videoFps').disabled = false;
 }
 
 // ---------- δεδομένα ----------

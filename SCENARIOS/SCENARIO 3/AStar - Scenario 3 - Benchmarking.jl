@@ -1,4 +1,4 @@
-begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
+1\\begin   # Φόρτωση των απαραίτητων βιβλιοθηκών
     using Agents                                                                                    # πλαίσιο agent-based μοντελοποίησης (ABM, add_agent!, step!, ...)
     using Agents.Pathfinding                                                                        # αλγόριθμοι εύρεσης διαδρομής (AStar/DStarLite, AbsolutePenaltyMap, MaxDistance, ...)
     using Dates                                                                                     # ημερομηνία/ώρα για το timestamp του αρχείου εξόδου

@@ -154,6 +154,9 @@ cx_pix = argmax(A0[:, src[2]]) - src[1]                                         
 check("S4g το μέγιστο στον άξονα βρίσκεται κατά τον άνεμο (>0 pixels)", cx_pix > 0)
 A0s = SF.concentration_map(c; dims, src, wind_deg = 0.0, t = tq, z = 2.0, m_per_px = mpp, scale = 0.4)
 check("S4h scale = 0.4 (κλάσμα H2S στο μίγμα) πολλαπλασιάζει τον χάρτη", A0s ≈ 0.4f0 .* A0 && maximum(A0s) > 0)
+# Κοντά στην πηγή το Gaussian προφίλ ξεπερνά το 1,0· το SLAB (σ. 15 του εγχειριδίου) επιτρέπει μέγιστο 1,0, άρα και η ανασύνθεση πρέπει να κόβει στο 1 (10⁶ ppm)
+near = [SF.concentration_ppm(c, x, y, z, t) for x in (1.0, 1.2, 1.5, 2.0, 4.0, 10.0), y in (-0.5, 0.0, 0.5), z in (0.0, 0.5, 1.0, 2.0), t in (0.01, 0.1, 1.0, 100.0)]
+check("S4i κοντά στην πηγή η συγκέντρωση δεν ξεπερνά το 1,0 (10⁶ ppm) και το όριο ενεργοποιείται", maximum(near) <= 1e6 && count(==(1e6), near) >= 1)
 
 # ---------------------------------------------------------------------------------------------
 println("\n== S5: χρονική εξέλιξη και αποθήκευση ==")
@@ -229,6 +232,23 @@ ppm_h2s = 0.40 * SF.concentration_ppm(cd2, 1000.0, 0.0, 2.0, 700.0)             
 gauss_ppm = 0.77 / (pi * 5.0 * σy * σz) / 0.03408 * (8.31431 * 300.15 / 101325.0) * 1e6 # kg/m³ → mol/m³ → ppm κατά όγκο
 @printf("  x = 1 km, D, 5 m/s, 0,77 kg/s H2S: SLAB %.1f ppm · Gaussian %.1f ppm · λόγος %.2f\n", ppm_h2s, gauss_ppm, ppm_h2s / gauss_ppm)
 check("S7j SLAB και Gaussian στο 1 km διαφέρουν λιγότερο από παράγοντα 5", 0.2 < ppm_h2s / gauss_ppm < 5)
+
+# Όλες οι υποθέσεις αλλάζουν από τη γραμμή εντολών, περνούν στο αρχείο εισόδου και καταγράφονται στο cases.tsv
+tmp7 = mktempdir()
+AG.main([joinpath(tmp7, "o"), "--xh2s=0.25", "--releases=tiny:0.5:300", "--stabs=D", "--winds=4", "--z0=0.5", "--za=8", "--ta=310", "--rh=70",
+         "--tav=60", "--xffm=2000", "--hs=3"])
+inp7 = [parse(Float64, strip(l)) for l in readlines(joinpath(tmp7, "o", "ag_tiny_D_4ms.in")) if !isempty(strip(l))]
+v7 = inp7[3:end-1]                                                                       # οι 27 τιμές μετά τα idspl/ncalc και πριν το -1
+check("S7k --z0/--za/--ta/--rh/--tav/--xffm/--hs περνούν στο αρχείο εισόδου", length(v7) == 27 && v7[22] == 0.5 && v7[23] == 8.0 && v7[24] == 4.0 &&
+      v7[25] == 310.0 && v7[26] == 70.0 && v7[16] == 60.0 && v7[17] == 2000.0 && v7[15] == 3.0 && v7[27] == 4.0)
+check("S7l --releases και --xh2s: διάρκεια 300 s και παροχή H2S 0,5 kg/s", v7[13] == 300.0 && isapprox(v7[11] * AG.mixture(0.25).w_h2s, 0.5; rtol = 1e-4) &&
+      isapprox(v7[1], AG.mixture(0.25).M; atol = 1e-6))
+tsv7 = split.(readlines(joinpath(tmp7, "o", "cases.tsv")), '\t')
+col7(name) = tsv7[2][findfirst(==(name), tsv7[1])]
+check("S7m το cases.tsv καταγράφει τις παραμέτρους (xh2s, z0, za, ta, rh, tav, xffm, hs)", length(tsv7) == 2 && length(tsv7[1]) == length(tsv7[2]) &&
+      [col7(n) for n in ("xh2s", "z0_m", "za_m", "ta_K", "rh_pct", "tav_s", "xffm_m", "hs_m")] == ["0.25", "0.5", "8", "310", "70", "60", "2000", "3"])
+check("S7n άγνωστη επιλογή δίνει σφάλμα", try AG.main([joinpath(tmp7, "p"), "--foo=1"]); false catch; true end)
+rm(tmp7; recursive = true, force = true)
 
 println("\n== Σύνοψη ==")
 nfail = count(!last, RESULTS)
