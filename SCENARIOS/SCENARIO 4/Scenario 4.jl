@@ -176,8 +176,6 @@ space = Pathfinding.ContinuousSpace(size(NPM); periodic = false, spacing = 1)
 # Ορισμός του pathfinder A* και των ιδιοτήτων του μοντέλου
 begin
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())  # κόστος κίνησης ανά cell από τον συνδυασμένο χάρτη, με γειτονιά 8 κατευθύνσεων (MaxDistance{2})
-    cost_metric_str = "APM"  # σύντμηση για τα ονόματα των αρχείων εξόδου
-    heuristic_code  = "DF"   # parity with DStarLite export names (A* uses default heuristic)
     pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = cost_metric_obj)  # A* pathfinder: οι agents δεν περνούν από μη βατά cells (walkmap) και ακολουθούν το cost_metric
     # ιδιότητες προσβάσιμες μέσα στο μοντέλο ως model.<όνομα>
     properties = (
@@ -388,7 +386,6 @@ end
 Balpha, Btime, Brho = setupToxic()
 # Suffix των αρχείων εξόδου: ίδια ονοματολογία με το DStarLite - Scenario 3.jl
 # Suffix for exports: align naming with DStarLite - Scenario 3.jl
-run_export_tag = "newAEGL_0.5CM_uncappedTL"  # ετικέτα στα ονόματα αρχείων εξόδου
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")  # χρονική σήμανση της εκτέλεσης
 
 
@@ -582,8 +579,8 @@ end
 
 
 # Ονόματα αρχείων εξόδου: βίντεο (mp4) και CSV με θέση και toxicload ανά βήμα
-video_file = "SCENARIOS/SCENARIO 4/Simulation Results/AStar_SCENARIO_4_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
-csv_file   = "SCENARIOS/SCENARIO 4/Simulation Results/AStar_SCENARIO_4_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"
+video_file = "SCENARIOS/SCENARIO 4/Simulation Results/AStar_SCENARIO_4_$(n_agents)_$(seed)_$(run_timestamp).mp4"
+csv_file   = "SCENARIOS/SCENARIO 4/Simulation Results/AStar_SCENARIO_4_$(n_agents)_$(seed)_$(run_timestamp).csv"
 
 # keep a variable for the currently active map index
 current_map_idx = 1  # δείκτης του ενεργού χάρτη συγκέντρωσης
@@ -684,11 +681,11 @@ if make_histogram  # Δημιουργία βίντεο ιστογράμματο�
     folder = joinpath("SCENARIOS","SCENARIO 4", "Simulation Results")  # φάκελος αποτελεσμάτων του Scenario 4
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_4_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_4_$(n_agents)_$(seed)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν υπάρχει το CSV αυτής της εκτέλεσης (ή δεν υπάρχει seed), πάρε το πιο πρόσφατο AStar_SCENARIO_4_*.csv
         # μοτίβο (regex) που ταιριάζει τα CSV του AStar Scenario 4 με τις ίδιες ετικέτες εξόδου
-        pattern = Regex("^AStar_SCENARIO_4_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
+        pattern = Regex("^AStar_SCENARIO_4_\\d+_\\d+_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))  # τα αρχεία του φακέλου που ταιριάζουν με το μοτίβο
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *AStar_SCENARIO_4_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))  # στατιστικά (ώρα τροποποίησης) των αρχείων αυτών
@@ -781,7 +778,7 @@ if make_histogram  # Δημιουργία βίντεο ιστογράμματο�
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "AStar_SCENARIO_4_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4")  # αρχείο εξόδου του βίντεο ιστογράμματος
+    out_file = joinpath(folder, "AStar_SCENARIO_4_hist_$(n_agents)_$(seed_str)_$(run_timestamp).mp4")  # αρχείο εξόδου του βίντεο ιστογράμματος
     record(fig, out_file, 1:T_play; framerate = 30) do frame  # για κάθε frame (βήμα) του CSV μέχρι T_play
         frame_obs[] = frame  # ενημέρωση του ρολογιού
         tl = Vector(df[df.step .== frame, :toxicload])  # οι τιμές toxicload των agents σε αυτό το βήμα

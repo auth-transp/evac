@@ -158,6 +158,21 @@ check("S4h scale = 0.4 (κλάσμα H2S στο μίγμα) πολλαπλασι
 near = [SF.concentration_ppm(c, x, y, z, t) for x in (1.0, 1.2, 1.5, 2.0, 4.0, 10.0), y in (-0.5, 0.0, 0.5), z in (0.0, 0.5, 1.0, 2.0), t in (0.01, 0.1, 1.0, 100.0)]
 check("S4i κοντά στην πηγή η συγκέντρωση δεν ξεπερνά το 1,0 (10⁶ ppm) και το όριο ενεργοποιείται", maximum(near) <= 1e6 && count(==(1e6), near) >= 1)
 
+# Διεύρυνση του νέφους (widen): ταυτότητα για 1, διατήρηση της εγκάρσιας μάζας, πλάτος × widen, κορυφή ÷ widen
+check("S4j widen = 1 δίνει ακριβώς τον ίδιο χάρτη", SF.concentration_map(c; dims, src, wind_deg = 0.0, t = tq, z = 2.0, m_per_px = mpp, widen = 1.0) == A0)
+st100 = SF.cloud_state(c, tq)
+ys = range(-400.0, 400.0; length = 8001)                                                 # εγκάρσιος άξονας στο x = 100 m, βήμα 0,1 m
+profile(w) = [SF.concentration_at(c, 100.0, y, 2.0, st100; widen = w) for y in ys]
+p1, p15 = profile(1.0), profile(1.5)
+mass1, mass15 = sum(p1) * step(ys), sum(p15) * step(ys)
+halfwidth(p) = ys[findlast(>=(0.5 * p[(length(ys) + 1) ÷ 2]), p)]                        # y όπου η συγκέντρωση πέφτει στο μισό της κεντρικής
+@printf("  widen = 1,5 στο x = 100 m: μάζα %.4f×, ημιπλάτος %.2f m → %.2f m (λόγος %.3f), κορυφή %.4f×\n", mass15 / mass1, halfwidth(p1), halfwidth(p15),
+        halfwidth(p15) / halfwidth(p1), p15[(length(ys) + 1) ÷ 2] / p1[(length(ys) + 1) ÷ 2])
+check("S4k widen = 1,5: ίδια εγκάρσια μάζα (±1%), πλάτος ×1,5 (±3%), κορυφή ÷1,5", abs(mass15 / mass1 - 1) < 0.01 && abs(halfwidth(p15) / halfwidth(p1) - 1.5) < 0.045 &&
+      isapprox(p15[(length(ys) + 1) ÷ 2], p1[(length(ys) + 1) ÷ 2] / 1.5; rtol = 1e-9))
+Aw = SF.concentration_map(c; dims, src, wind_deg = 0.0, t = tq, z = 2.0, m_per_px = mpp, widen = 1.3)
+check("S4l με widen = 1,3 η περιοχή > 1 ppm μεγαλώνει και η μέγιστη τιμή μειώνεται", count(>(1.0f0), Aw) > count(>(1.0f0), A0) && maximum(Aw) < maximum(A0))
+
 # ---------------------------------------------------------------------------------------------
 println("\n== S5: χρονική εξέλιξη και αποθήκευση ==")
 check("S5a πριν τη διαρροή (t < t₁) το πεδίο είναι μηδέν", maximum(SF.concentration_map(c; dims = (21, 21), src = (11, 11), wind_deg = 0.0, t = -1.0)) == 0.0)

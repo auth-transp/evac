@@ -104,8 +104,6 @@ end
 
 
 begin   # Ορισμός των flow field pathfinders (ένας ανά έξοδο) και των ιδιοτήτων του μοντέλου
-    cost_metric_str = "APM"                       # σύντμηση για τα ονόματα των αρχείων εξόδου (κόστος |p(u)|+|p(v)| όπως το AbsolutePenaltyMap)
-    heuristic_code  = "NA"   # δεν υπάρχει ευρετική στο flow field (διατηρείται για ομοιομορφία των ονομάτων αρχείων)
     # flow field pathfinders: οι agents δεν περνούν από μη βατά cells (walkmap)· κόστος βήματος = μήκος (1 ορθογώνια, √2 διαγώνια)
     # + |NPM| των δύο cells (όπως το AbsolutePenaltyMap του A*). Ένας στόχος ανά pathfinder, άρα ένας pathfinder ανά έξοδο.
     pathfinders = [FlowField(space; walkmap = walkmap, penalty_map = NPM_int, absolute_penalty = true) for _ in dests]
@@ -337,7 +335,6 @@ end
 # Υπολογισμός των πινάκων τοξικότητας μία φορά (global, χρησιμοποιούνται από την tl_rate)
 Balpha, Btime, Brho = setupToxic()
 # Suffix for exports: align naming with the other Scenario 3 scripts
-run_export_tag = "newAEGL_0.5CM_uncappedTL"                                 # ετικέτα στα ονόματα αρχείων εξόδου
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")            # χρονική σήμανση της εκτέλεσης
 
 
@@ -516,8 +513,8 @@ end
 
 
 # ονόματα αρχείων εξόδου (βίντεο και CSV) με παραμέτρους της εκτέλεσης και timestamp
-video_file = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
-csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"
+video_file = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(run_timestamp).mp4"
+csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(run_timestamp).csv"
 
 # keep a variable for the currently active map index
 # δείκτης του ενεργού concentration map (ξεκινά από το 1ο)
@@ -620,10 +617,10 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")   # φάκελος αποτελεσμάτων
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "FlowField_SCENARIO_3_$(n_agents)_$(seed)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed ή δεν υπάρχει το αρχείο, πάρε το πιο πρόσφατο FlowField_SCENARIO_3_*.csv
-        pattern = Regex("^FlowField_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
+        pattern = Regex("^FlowField_SCENARIO_3_\\d+_\\d+_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *FlowField_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -715,7 +712,7 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "FlowField_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
+    out_file = joinpath(folder, "FlowField_SCENARIO_3_hist_$(n_agents)_$(seed_str)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])    # τοξικά φορτία όλων των agents στο συγκεκριμένο frame

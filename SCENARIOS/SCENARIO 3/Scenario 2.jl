@@ -109,7 +109,6 @@ end
 begin   # Ορισμός του pathfinder A* και των ιδιοτήτων του μοντέλου
     # κόστος κίνησης ανά cell από τον συνδυασμένο χάρτη, με γειτονιά 8 κατευθύνσεων (MaxDistance{2})
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "APM"                       # σύντμηση για τα ονόματα των αρχείων εξόδου
     # A* pathfinder: οι agents δεν περνούν από μη βατά cells (walkmap) και ακολουθούν το cost_metric
     pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     # ιδιότητες προσβάσιμες μέσα στο μοντέλο ως model.<όνομα>
@@ -470,7 +469,7 @@ end
 
     # -- Έναρξη record: video και συλλογή δεδομένων ταυτόχρονα --
     # όνομα αρχείου βίντεο (ονοματολογία AStar_SCENARIO_2, αποθηκεύεται στον φάκελο αποτελεσμάτων του Scenario 3)
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_2_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).mp4"
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_2_$(n_agents)_$(seed)_$(run_timestamp).mp4"
     record(fig, video_file, 1:T; framerate=30) do frame
         # 1) ενημέρωση του frame counter
         frame_obs[] = frame
@@ -505,7 +504,7 @@ end
     println("Το animation σώθηκε ως $video_file")
 
     # -- Εξαγωγή CSV με θέση & toxicload των agents --
-    csv_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_2_$(n_agents)_$(seed)_$(cost_metric_str)_$(run_timestamp).csv"
+    csv_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_2_$(n_agents)_$(seed)_$(run_timestamp).csv"
     CSV.write(csv_file, df)                             # αποθήκευση των δεδομένων θέσης & toxicload
     println("Τα δεδομένα θέσης & toxicload αποθηκεύτηκαν ως $csv_file")
 end
@@ -518,10 +517,10 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")   # φάκελος αποτελεσμάτων
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_2_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(run_timestamp).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_2_$(n_agents)_$(seed_str)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed ή δεν υπάρχει το αρχείο, πάρε το πιο πρόσφατο *AStar_SCENARIO_2_*.csv
-        pattern = Regex("^AStar_SCENARIO_2_.*_$(cost_metric_str)_.*\\.csv\$")
+        pattern = Regex("^AStar_SCENARIO_2_\\d+_\\d+_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *AStar_SCENARIO_2_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -613,7 +612,7 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "AStar_SCENARIO_2_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
+    out_file = joinpath(folder, "AStar_SCENARIO_2_hist_$(n_agents)_$(seed_str)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])    # τοξικά φορτία όλων των agents στο συγκεκριμένο frame

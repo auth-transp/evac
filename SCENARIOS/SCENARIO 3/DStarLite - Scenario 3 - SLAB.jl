@@ -37,7 +37,7 @@ Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
 end
 
 
-begin   # Φόρτωση του heightmap και των χαρτών συγκέντρωσης CM1..CM7 από το μοντέλο διασποράς SLAB (αντί για τα χειρόγραφα CMs)
+begin   # Φόρτωση του heightmap και των χαρτών συγκέντρωσης CM1..CMn από το μοντέλο διασποράς SLAB (αντί για τα χειρόγραφα CMs)
     # heightmap
     heightmap_data = load("NADEEN/Maps/Qatargas Map.jpg")                              # φόρτωση της εικόνας του χάρτη
     heightmap_data = permutedims(channelview(heightmap_data), [2,3,1])[:,:,1]          # μετατροπή σε πίνακα (γραμμές, στήλες) και κράτημα του 1ου καναλιού
@@ -56,7 +56,9 @@ begin   # Φόρτωση του heightmap και των χαρτών συγκέ�
     const SLAB_Z = parse(Float64, get(ENV, "EVAC_SLAB_Z", "2.0"))   # ύψος υπολογισμού της συγκέντρωσης (m), ύψος αναπνοής· ο κλειστός τύπος του SLAB δίνει το πεδίο σε οποιοδήποτε ύψος
     const PENALTY_CAP = parse(Float64, get(ENV, "EVAC_SLAB_PENALTY_CAP", "255.0"))   # άνω όριο του κόστους διαδρομής από τη συγκέντρωση (όπως η κλίμακα 0..255 των χειρόγραφων CMs)
     const MG_PER_PPM = 34.0 / 24.04                                 # ppm -> mg/m^3 με MW = 34 g/mol του setupToxic
-    const SLAB_CM_EDGES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0, 2500.0]   # όρια ισχύος των CM: τα CM_SWITCH_TIMES και το T = 2500 s
+    const SLAB_CM_PERIOD = parse(Float64, get(ENV, "EVAC_SLAB_CM_PERIOD", "60"))   # κάθε πόσα frames (1 frame = 1 s) αλλάζει το CM
+    const SLAB_WIDEN = parse(Float64, get(ENV, "EVAC_SLAB_WIDEN", "1.3"))   # διεύρυνση του νέφους κατά πλάτος (1 = ακριβώς το SLAB)· διατηρεί τη συνολική εγκάρσια μάζα, άρα μειώνει ανάλογα τη συγκέντρωση
+    const SLAB_CM_EDGES = vcat(collect(0.0:SLAB_CM_PERIOD:2499.0), 2500.0)   # όρια ισχύος των CM: ένα CM κάθε SLAB_CM_PERIOD s και το T = 2500 s
     const SLAB_CM_TIMES = (SLAB_CM_EDGES[1:end-1] .+ SLAB_CM_EDGES[2:end]) ./ 2          # χρόνος του SLAB για κάθε CM = μέσο του διαστήματος ισχύος του
 
     # κλάσμα H2S του μίγματος από το cases.tsv (το SLAB δίνει κλάσμα όγκου του συνόλου του εκλυόμενου μίγματος)
@@ -64,16 +66,16 @@ begin   # Φόρτωση του heightmap και των χαρτών συγκέ�
     case_row = only(filter(r -> r[1] == SLAB_CASE, cases_rows))     # η γραμμή της επιλεγμένης περίπτωσης
     const SLAB_XH2S = parse(Float64, case_row[findfirst(==("xh2s"), cases_rows[1])])   # μοριακό κλάσμα H2S στο μίγμα
 
-    # --- Χάρτες CM1..CM7 από το SLAB ---
-    const NUM_CMS = length(SLAB_CM_TIMES)                           # πλήθος χαρτών (7, όσα και τα χειρόγραφα CMs)
+    # --- Χάρτες CM1..CMn από το SLAB ---
+    const NUM_CMS = length(SLAB_CM_TIMES)                           # πλήθος χαρτών (ένας ανά SLAB_CM_PERIOD s, π.χ. 42 για 60 s)
     slab_cloud = SF.parse_slab_output(joinpath(SLAB_DIR, SLAB_CASE * ".predict"))   # παράμετροι του νέφους από την έξοδο του SLAB
-    exposure_list = Vector{Array{Float64,2}}(undef, NUM_CMS)        # πραγματικές συγκεντρώσεις (mg/m^3) για το τοξικό φορτίο
-    cm_list = Vector{Array{Float64,2}}(undef, NUM_CMS)              # κόστος διαδρομής: οι ίδιες συγκεντρώσεις κομμένες στο PENALTY_CAP
+    exposure_list = Vector{Matrix{Float32}}(undef, NUM_CMS)         # πραγματικές συγκεντρώσεις (mg/m^3) για το τοξικό φορτίο, σε Float32 για οικονομία μνήμης (42 χάρτες)
+    cm_list = Vector{Matrix{Float32}}(undef, NUM_CMS)               # κόστος διαδρομής: οι ίδιες συγκεντρώσεις κομμένες στο PENALTY_CAP
     for k in 1:NUM_CMS
         A = SF.concentration_map(slab_cloud; dims = size(heightmap), src = SLAB_SOURCE, wind_deg = SLAB_WIND_DEG, t = SLAB_CM_TIMES[k],
-                                 z = SLAB_Z, m_per_px = 2500.0 / 723.37, scale = SLAB_XH2S)   # ppm H2S στο πλέγμα του heightmap (1 pixel = 2500/723.37 m)
-        exposure_list[k] = Float64.(A) .* MG_PER_PPM                # ppm -> mg/m^3
-        cm_list[k] = min.(exposure_list[k], PENALTY_CAP)            # κοπή για το κόστος διαδρομής
+                                 z = SLAB_Z, m_per_px = 2500.0 / 723.37, scale = SLAB_XH2S, widen = SLAB_WIDEN)   # ppm H2S στο πλέγμα του heightmap (1 pixel = 2500/723.37 m)
+        exposure_list[k] = A .* Float32(MG_PER_PPM)                 # ppm -> mg/m^3
+        cm_list[k] = min.(exposure_list[k], Float32(PENALTY_CAP))   # κοπή για το κόστος διαδρομής
     end
 
     # basic check: dimensions match heightmap
@@ -84,8 +86,8 @@ begin   # Φόρτωση του heightmap και των χαρτών συγκέ�
 
     # start with first CM
     # το penalty_map (τρέχον CM) ξεκινά ως αντίγραφο του 1ου χάρτη
-    global penalty_map = copy(cm_list[1])
-    global exposure_map = copy(exposure_list[1])                    # τρέχων χάρτης έκθεσης (mg/m^3) που διαβάζει το τοξικό φορτίο
+    global penalty_map = Float64.(cm_list[1])                       # τα τρέχοντα penalty_map/exposure_map είναι Float64, οι λίστες Float32
+    global exposure_map = Float64.(exposure_list[1])                # τρέχων χάρτης έκθεσης (mg/m^3) που διαβάζει το τοξικό φορτίο
 end
 
 # συνδυασμένος χάρτης κόστους = ανάγλυφο/εμπόδια (heightmap) + τοξική συγκέντρωση (penalty_map)
@@ -97,7 +99,7 @@ begin   # Αρχικοποίηση των παραμέτρων του μοντέ
     dt = 1.   ## discrete timestep each iteration of the model          # Define the dt variable as 1
     seed = 123  ## seed for random number generator                     # Define the seed variable as 123
     make_histogram = false  # true για να δημιουργηθεί το βίντεο ιστογράμματος τοξικού φορτίου (default false, ώστε να μη γεμίζουν οι φάκελοι με αρχεία)
-    n_agents = 50                                                        # Define the n_agents variable as 100
+    n_agents = 100                                                        # Define the n_agents variable as 100
     age_range = (22,60)                                                 # Define the age_range variable as a tuple of 22 and 60
     speed_range = (4.0,7.0)                                            # Define the speed_range variable as a tuple of 4.0 and 7.0
     mass_range = (50,80)                                                # Define the mass_range variable as a tuple of 50 and 80
@@ -131,8 +133,6 @@ end
 begin   # Ορισμός του pathfinder D* Lite και των ιδιοτήτων του μοντέλου
     # κόστος κίνησης ανά cell από τον συνδυασμένο χάρτη, με γειτονιά 8 κατευθύνσεων (MaxDistance{2})
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "APM"                       # σύντμηση για τα ονόματα των αρχείων εξόδου
-    heuristic_code  = "DF"   # DF: default Agents.jl heuristic, EY: Euclidean, MN: Manhattan
     # D* Lite pathfinder: οι agents δεν περνούν από μη βατά cells (walkmap) και ακολουθούν το cost_metric
     pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = cost_metric_obj)
 
@@ -175,30 +175,25 @@ end
 
 # Μετακινεί τον agent κατά μήκος ενός προϋπολογισμένου μονοπατιού (λίστα από grid cells), κάνοντας ένα βήμα ταχύτητας `speed` για χρονικό διάστημα `dt` ανά κλήση.
 function move_along_precomputed_path!(agent::AgentEscapes, speed, dt)
-    # Αν δεν υπάρχει μονοπάτι (άδειο path), δεν κάνει τίποτα
-    isempty(agent.path) && return
-
-    # επόμενος grid στόχος: το πρώτο cell του path είναι ο τρέχων στόχος
-    cell = agent.path[1]
-    target = SVector{2,Float64}(cell[1], cell[2])
-
-    # διάνυσμα και απόσταση από την τρέχουσα θέση προς τον στόχο
-    dir = target .- agent.pos
-    dist = norm(dir)
-
-    # dist == 0: already on waypoint; must pop without dividing (speed==0 ⇒ 0 < speed*dt is false and 0/0 → NaN)
-    # Αν ο agent είναι ήδη στον στόχο (dist == 0) ή τον φτάνει μέσα σε αυτό το βήμα
-    # (dist < speed*dt), τον τοποθετεί ακριβώς πάνω του (χωρίς overshoot).
-    # Το iszero(dist) είναι απαραίτητο: με speed == 0 η συνθήκη 0 < 0 είναι ψευδής
-    # και η διαίρεση dir/dist θα έδινε 0/0 → NaN.
-    if iszero(dist) || dist < speed * dt
-        agent.pos = target
-        popfirst!(agent.path)   # πήγες στο cell: αφαιρείται ώστε την επόμενη κλήση να στοχεύσει το επόμενο
-    else
-        # Διαφορετικά κινείται κατά speed*dt προς τον στόχο (dir/dist = μοναδιαίο διάνυσμα κατεύθυνσης)
-        agent.pos += (dir / dist) * speed * dt
+    # Ο agent καλύπτει ακριβώς απόσταση speed*dt ανά βήμα: όταν φτάνει σε ένα waypoint, το υπόλοιπο της απόστασης
+    # συνεχίζει προς τα επόμενα (ίδια συμπεριφορά με το move_along_route! του A* στο Agents.jl). Χωρίς αυτή τη μεταφορά
+    # ο agent θα σταματούσε σε κάθε waypoint και θα έχανε το υπόλοιπο, κινούμενος ~10-15% πιο αργά από το μοντέλο ταχύτητας.
+    remaining = speed * dt                                                                          # απόσταση που απομένει να καλυφθεί σε αυτό το βήμα
+    pos = agent.pos                                                                                 # τρέχουσα θέση
+    while !isempty(agent.path) && remaining > 0                                                     # όσο υπάρχουν waypoints και απομένει απόσταση (με speed == 0 δεν κινείται)
+        cell = agent.path[1]                                                                        # επόμενο waypoint (grid cell)
+        target = SVector{2,Float64}(cell[1], cell[2])                                               # θέση του waypoint
+        d = norm(target .- pos)                                                                     # απόσταση ως το waypoint
+        if d <= remaining                                                                           # το waypoint φτάνεται μέσα σε αυτό το βήμα (και όταν d == 0: χωρίς διαίρεση με 0)
+            pos = target                                                                            # ο agent φτάνει στο waypoint
+            remaining -= d                                                                          # η απόσταση που περισσεύει συνεχίζει προς το επόμενο waypoint
+            popfirst!(agent.path)                                                                   # το waypoint αφαιρείται από το path
+        else
+            pos = pos .+ (target .- pos) ./ d .* remaining                                          # κίνηση κατά την απόσταση που απομένει προς το waypoint (d > remaining > 0)
+            remaining = 0.0                                                                         # η απόσταση του βήματος εξαντλήθηκε
+        end
     end
-    # Σημείωση: ολοκληρώνεται το πολύ ένα waypoint ανά κλήση· το περισσεύον βήμα δεν μεταφέρεται στο επόμενο cell.
+    agent.pos = pos                                                                                 # νέα θέση του agent
 end
 
 
@@ -438,8 +433,14 @@ end
 
 # Υπολογισμός των πινάκων τοξικότητας μία φορά (global, χρησιμοποιούνται από την tl_rate)
 Balpha, Btime, Brho = setupToxic()
+# Pathfinder type: "full_field" (ένας D* Lite planner ανά έξοδο, κοινός για όλους τους agents, χωρίς ευρετική) ή
+# "per_agent" (focused D* Lite, Koenig & Likhachev 2002: ένας planner ανά agent ΚΑΙ έξοδο, με s_start = θέση του agent και ευρετική)
+const PATHFINDER_TYPE = lowercase(get(ENV, "EVAC_PATHFINDER", "per_agent"))     # επιλογή τύπου: μεταβλητή περιβάλλοντος EVAC_PATHFINDER=full_field | per_agent
+PATHFINDER_TYPE in ("full_field", "per_agent") || error("Άγνωστος τύπος pathfinder «$(PATHFINDER_TYPE)»: χρησιμοποίησε full_field ή per_agent")
+const FOCUSED_HEURISTIC = :delta_cost       # ευρετική h(s_start, s) των focused planners: απόσταση του βασικού metric (MaxDistance) χωρίς penalties, επιτρεπτή (h ≤ c*)
+println("Pathfinder type: ", PATHFINDER_TYPE == "full_field" ? "Full field" : "Per agent")
 # Suffix for exports: new AEGL tables in setupToxic() + 0.5 CM context
-run_export_tag = "newAEGL_0.5CM_uncappedTL_SLAB_$(SLAB_CASE)_w$(round(Int, SLAB_WIND_DEG))_s$(SLAB_SOURCE[1])-$(SLAB_SOURCE[2])"   # ετικέτα στα ονόματα αρχείων εξόδου (περίπτωση, άνεμος, πηγή)
+run_export_tag = "_SLAB" * (PATHFINDER_TYPE == "per_agent" ? "_pfAgent" : "")   # επίθημα στα ονόματα αρχείων εξόδου: SLAB (+ pathfinder όταν δεν είναι ο προεπιλεγμένος)
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")            # χρονική σήμανση της εκτέλεσης
 
 
@@ -554,10 +555,9 @@ end
 
 @time begin   # Δημιουργία animation με trails & συλλογή CSV θέσης και toxicload
     const T = 2500      # συνολικός αριθμός frames/βημάτων της προσομοίωσης
-    # CM switch times (s) — Thesis, Table 7: 7 CMs, switching completes at ≈70% of T = 2500 s (last switch at 1752 s).
+    # CM switch times (s): νέος χάρτης SLAB κάθε SLAB_CM_PERIOD s (προεπιλογή 60 s = 60 frames), βλ. το μπλοκ φόρτωσης στην αρχή.
     # Time counter is t = (frame - 1) * dt.
-    const CM_SWITCH_TIMES = [0.0, 292.0, 584.0, 876.0, 1168.0, 1460.0, 1752.0]
-    @assert CM_SWITCH_TIMES == SLAB_CM_EDGES[1:end-1] "τα CM_SWITCH_TIMES πρέπει να ταυτίζονται με τα SLAB_CM_EDGES του μπλοκ φόρτωσης"
+    const CM_SWITCH_TIMES = SLAB_CM_EDGES[1:end-1]                  # χρόνοι ενεργοποίησης των CM (τα όρια του μπλοκ φόρτωσης χωρίς το T)
 
 
     # -- Στήσιμο Figure & Axis --
@@ -667,8 +667,8 @@ end
 
 
     # ονόματα αρχείων εξόδου (βίντεο και CSV) με παραμέτρους της εκτέλεσης και timestamp
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
-    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)$(run_export_tag)_$(run_timestamp).mp4"
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)$(run_export_tag)_$(run_timestamp).csv"
 
     # keep a variable for the currently active map index
     # δείκτης του ενεργού concentration map (ξεκινά από το 1ο)
@@ -690,16 +690,27 @@ end
 
     # Initial pathfinding: build planners and extract initial best paths
     path_planning_init_time[] += @elapsed begin
-        global planners
-        # ένας D* Lite planner ανά έξοδο
-        planners = [
-            init_planner(pathfinderPM, goal_cell)
-            for goal_cell in exit_cells
-        ]
+        global planners, agent_planners
+        if PATHFINDER_TYPE == "full_field"
+            # Full field: ένας D* Lite planner ανά έξοδο, κοινός για όλους τους agents (h ≡ 0, τρέχει μέχρι να αδειάσει η ουρά)
+            planners = [
+                init_planner(pathfinderPM, goal_cell)
+                for goal_cell in exit_cells
+            ]
+            agent_planners = Dict{Int,Vector{Any}}()                    # δεν χρησιμοποιείται σε αυτόν τον τύπο
+        else
+            # Per agent: focused D* Lite (Koenig & Likhachev 2002), ένας planner ανά agent ΚΑΙ έξοδο με s_start = cell του agent
+            planners = Any[]                                            # δεν χρησιμοποιείται σε αυτόν τον τύπο
+            agent_planners = Dict{Int,Vector{Any}}(
+                a.id => Any[init_planner(pathfinderPM, goal_cell, world_to_cell(a.pos, grid_dims); heuristic = FOCUSED_HEURISTIC) for goal_cell in exit_cells]
+                for a in allagents(model)
+            )
+        end
         for a in allagents(model)
             start = world_to_cell(a.pos, grid_dims)                     # cell εκκίνησης του agent
 
-            paths = [extract_path(p, start) for p in planners]          # μονοπάτι προς κάθε έξοδο
+            ps = PATHFINDER_TYPE == "full_field" ? planners : agent_planners[a.id]       # οι planners που εξυπηρετούν τον agent
+            paths = Vector{Vector{Tuple{Int,Int}}}([extract_path(p, start) for p in ps]) # μονοπάτι προς κάθε έξοδο
             a.path = choose_best_path(paths)                            # κρατά το συντομότερο
 
             # Note: Do NOT update pathX/pathY here - they are the traveled trail,
@@ -743,15 +754,24 @@ end
 
             # --- Path planning time (replanning): D* Lite update + per-agent path extraction ---
             path_planning_replan_time[] += @elapsed begin
-                # ενημέρωση κάθε planner μόνο για τα cells που άλλαξαν (αυξητικό replanning)
-                for planner in planners
-                    update_after_cm_change!(planner, changed_cells)
+                if PATHFINDER_TYPE == "full_field"
+                    # ενημέρωση κάθε planner (ένας ανά έξοδο) μόνο για τα cells που άλλαξαν (αυξητικό replanning)
+                    for planner in planners
+                        update_after_cm_change!(planner, changed_cells)
+                    end
                 end
                 # νέο μονοπάτι για κάθε agent από την τρέχουσα θέση του
                 for a in allagents(model)
                     start = world_to_cell(a.pos, grid_dims)
 
-                    paths = [extract_path(p, start) for p in planners]
+                    if PATHFINDER_TYPE == "per_agent"
+                        at_goal(a.pos, model.goal) && continue          # agent που έχει ήδη διαφύγει: δεν χρειάζεται ούτε νέα διαδρομή ούτε ενημέρωση των planners του
+                        for planner in agent_planners[a.id]
+                            update_after_cm_change!(planner, changed_cells, start)   # {35''} s_start = θέση agent, {38''-39''} k_m, {40''-47''} αλλαγμένες ακμές, {48''} ComputeShortestPath
+                        end
+                    end
+                    ps = PATHFINDER_TYPE == "full_field" ? planners : agent_planners[a.id]       # οι planners που εξυπηρετούν τον agent
+                    paths = Vector{Vector{Tuple{Int,Int}}}([extract_path(p, start) for p in ps]) # μονοπάτι προς κάθε έξοδο
 
                     a.path = choose_best_path(paths)
 
@@ -808,7 +828,7 @@ end
     # --- Timing summary ---
     # συνολικός χρόνος pathfinding = αρχικός σχεδιασμός + replanning
     total_path_planning = path_planning_init_time[] + path_planning_replan_time[]
-    println("TIMING BREAKDOWN:")
+    println("TIMING BREAKDOWN:  (Pathfinder type: ", PATHFINDER_TYPE == "full_field" ? "Full field" : "Per agent", ")")
     println("  Pathfinding time (total): ", round(total_path_planning; digits=6), " s")
     println("    - Initial pathfinding: ", round(path_planning_init_time[]; digits=6), " s")
     println("    - Replanning during CM changes: ", round(path_planning_replan_time[]; digits=6), " s")
@@ -827,10 +847,10 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")   # φάκελος αποτελεσμάτων
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)$(run_export_tag)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed ή δεν υπάρχει το αρχείο, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
-        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
+        pattern = Regex("^DStarLite_SCENARIO_3_\\d+_\\d+$(run_export_tag)_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *DStarLite_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -921,7 +941,7 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
+    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist_$(n_agents)_$(seed_str)$(run_export_tag)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])    # τοξικά φορτία όλων των agents στο συγκεκριμένο frame

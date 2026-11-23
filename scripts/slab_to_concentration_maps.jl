@@ -8,9 +8,10 @@
 # Άρα το πεδίο μπορεί να ανασυντεθεί ακριβώς σε οποιοδήποτε πλέγμα, χρόνο, ύψος και διεύθυνση ανέμου.
 #
 # Χρήση από τη ρίζα του repo (μόνο standard library, δεν χρειάζεται project):
-#   julia scripts/slab_to_concentration_maps.jl <predict> <φάκελος_εξόδου> --source=i,j --wind=θ [--times=t1,t2,...] [--z=2.0] [--dims=915,983] [--mpp=3.456] [--scale=1.0]
+#   julia scripts/slab_to_concentration_maps.jl <predict> <φάκελος_εξόδου> --source=i,j --wind=θ [--times=t1,t2,...] [--z=2.0] [--dims=915,983] [--mpp=3.456] [--scale=1.0] [--widen=1.0]
 # Ορίσματα: --source=i,j (pixel πηγής, υποχρεωτικό) · --wind=θ (μοίρες, υποχρεωτικό) · --times=… (s) · --z=… (m) · --dims=… · --mpp=… (m ανά pixel)
 #           --scale=… (πολλαπλασιαστής του κλάσματος όγκου του SLAB, π.χ. 0.4 = x_H2S για ppm H2S σε μίγμα H2S + CO2)
+#           --widen=… (διεύρυνση του νέφους κατά πλάτος με διατήρηση της εγκάρσιας μάζας, π.χ. 1.3· 1 = ακριβώς το SLAB)
 #
 # Συμβάσεις συντεταγμένων:
 #   - Τα (i, j) είναι οι δείκτες του πίνακα [i, j] (όπως στα σενάρια: pos[1] → i, pos[2] → j).
@@ -194,7 +195,9 @@ function smoothed_box(u::Float64, half::Float64, beta::Float64)
 end
 
 # Κλάσμα όγκου c στο σημείο (x, y, z) τη στιγμή που το νέφος έχει κατάσταση st = (xc, bx, βx)
-function concentration_at(c::SlabCloud, x::Float64, y::Float64, z::Float64, st)
+#   widen: συντελεστής διεύρυνσης του νέφους κατά πλάτος (1 = ακριβώς το SLAB)· κλιμακώνει το y και διαιρεί το πλάτος της κορυφής,
+#          ώστε να διατηρείται η συνολική εγκάρσια μάζα (∫C dy)· προσεγγίζει την επίδραση meander σε μεγαλύτερο χρόνο μέσου όρου χωρίς νέα εκτέλεση του SLAB
+function concentration_at(c::SlabCloud, x::Float64, y::Float64, z::Float64, st; widen::Float64 = 1.0)
     st === nothing && return 0.0
     xc, bx, betax = st
     cc = interp(c.x, c.cc, x)
@@ -206,22 +209,23 @@ function concentration_at(c::SlabCloud, x::Float64, y::Float64, z::Float64, st)
     sig = interp(c.x, c.sig, x)
     fx = smoothed_box(x - xc, bx, betax)                # (erf(xa) − erf(xb))
     fx == 0.0 && return 0.0
-    fy = smoothed_box(y, b, betac)                      # (erf(ya) − erf(yb))
+    fy = smoothed_box(y / widen, b, betac)              # (erf(ya) − erf(yb)) με το πλάτος κλιμακωμένο κατά widen
     fy == 0.0 && return 0.0
     s = sqrt(2.0) * sig
     fz = exp(-((z - zc) / s)^2) + exp(-((z + zc) / s)^2) # (exp(−za²) + exp(−zb²))
-    return min(1.0, cc * fx * fy * fz)                  # το SLAB επιτρέπει μέγιστο 1,0 (κλάσμα όγκου): η κορυφή του Gaussian προφίλ μπορεί να το ξεπεράσει (σ. 15 του εγχειριδίου)
+    return min(1.0, cc * fx * fy * fz / widen)          # το SLAB επιτρέπει μέγιστο 1,0 (κλάσμα όγκου): η κορυφή του Gaussian προφίλ μπορεί να το ξεπεράσει (σ. 15 του εγχειριδίου)
 end
 
 # Συγκέντρωση σε ppm (κατά όγκο) στο σημείο (x, y, z) και χρόνο t· x κατά τον άνεμο, y εγκάρσια, z ύψος (m)
-concentration_ppm(c::SlabCloud, x::Real, y::Real, z::Real, t::Real) =
-    1e6 * concentration_at(c, Float64(x), Float64(y), Float64(z), cloud_state(c, Float64(t)))
+concentration_ppm(c::SlabCloud, x::Real, y::Real, z::Real, t::Real; widen::Real = 1.0) =
+    1e6 * concentration_at(c, Float64(x), Float64(y), Float64(z), cloud_state(c, Float64(t)); widen = Float64(widen))
 
 # Χάρτης συγκέντρωσης (ppm) πάνω στο πλέγμα [i, j] για χρόνο t και ύψος z
 #   src = (i0, j0): pixel της πηγής · wind_deg: διεύθυνση κίνησης του νέφους στο επίπεδο των δεικτών (0° → +i, 90° → +j)
 #   scale: το SLAB δίνει κλάσμα όγκου του ΣΥΝΟΛΟΥ του εκλυόμενου μίγματος· για μίγμα H2S + CO2 με x_H2S = 0,4 δώσε scale = 0,4 ώστε να βγει ppm H2S
+#   widen: διεύρυνση του νέφους κατά πλάτος με διατήρηση της εγκάρσιας μάζας (βλ. concentration_at)· 1 = όπως το SLAB
 function concentration_map(c::SlabCloud; dims = DEFAULT_DIMS, src, wind_deg::Real, t::Real, z::Real = 2.0,
-                           m_per_px::Real = DEFAULT_M_PER_PX, scale::Real = 1.0)
+                           m_per_px::Real = DEFAULT_M_PER_PX, scale::Real = 1.0, widen::Real = 1.0)
     st = cloud_state(c, Float64(t))
     out = zeros(Float32, dims...)
     st === nothing && return out
@@ -233,7 +237,7 @@ function concentration_map(c::SlabCloud; dims = DEFAULT_DIMS, src, wind_deg::Rea
         x = dx * ew[1] + dy * ew[2]                             # συντεταγμένη κατά τον άνεμο
         x < c.x[1] && continue                                  # ανάντη της πηγής
         y = dx * ep[1] + dy * ep[2]                             # εγκάρσια συντεταγμένη
-        out[i, j] = Float32(scale * 1e6 * concentration_at(c, x, y, Float64(z), st))     # scale = κλάσμα του μίγματος που είναι η τοξική ουσία (π.χ. x_H2S)
+        out[i, j] = Float32(scale * 1e6 * concentration_at(c, x, y, Float64(z), st; widen = Float64(widen)))     # scale = κλάσμα του μίγματος που είναι η τοξική ουσία (π.χ. x_H2S)
     end
     return out
 end
@@ -304,7 +308,7 @@ function main(args)
         opts[m.captures[1]] = m.captures[2]
     end
     for k in keys(opts)
-        k in ("source", "wind", "times", "z", "dims", "mpp", "scale") || error("Άγνωστη επιλογή --$k")
+        k in ("source", "wind", "times", "z", "dims", "mpp", "scale", "widen") || error("Άγνωστη επιλογή --$k")
     end
     haskey(opts, "source") || error("Λείπει το --source=i,j")
     haskey(opts, "wind") || error("Λείπει το --wind=θ")
@@ -315,6 +319,8 @@ function main(args)
     dims = haskey(opts, "dims") ? Tuple(parse_list(opts["dims"], Int)) : DEFAULT_DIMS
     mpp = haskey(opts, "mpp") ? parse(Float64, opts["mpp"]) : DEFAULT_M_PER_PX
     scale = haskey(opts, "scale") ? parse(Float64, opts["scale"]) : 1.0
+    widen = haskey(opts, "widen") ? parse(Float64, opts["widen"]) : 1.0
+    widen > 0 || error("Το --widen πρέπει να είναι θετικό")
 
     cloud = parse_slab_output(predict)
     mkpath(outdir)
@@ -327,11 +333,12 @@ function main(args)
     println(meta, "z_m = ", z)
     println(meta, "m_per_px = ", mpp)
     println(meta, "scale = ", scale, "  (πολλαπλασιαστής του κλάσματος όγκου του SLAB)")
+    println(meta, "widen = ", widen, "  (διεύρυνση κατά πλάτος με διατήρηση της εγκάρσιας μάζας· 1 = όπως το SLAB)")
     println(meta, "tav_s = ", cloud.tav, " · tsd_s = ", cloud.tsd, " · xffm_m = ", cloud.xffm)
     println(meta, "t_last_table_s = ", cloud.t[end], "  (πέρα από αυτόν τον χρόνο γίνεται γραμμική προέκταση του νέφους)")
     println(meta, "# k  t(s)  max(ppm)  pixels>10ppm  pixels>100ppm  pixels>1000ppm")
     for (k, t) in enumerate(times)
-        A = concentration_map(cloud; dims, src, wind_deg = wind, t, z, m_per_px = mpp, scale)
+        A = concentration_map(cloud; dims, src, wind_deg = wind, t, z, m_per_px = mpp, scale, widen)
         save_concentration_map(joinpath(outdir, "cm_$(k).f32"), A)
         line = @sprintf("%d  %.1f  %.1f  %d  %d  %d", k, t, maximum(A), count(>(10), A), count(>(100), A), count(>(1000), A))
         println(meta, line)

@@ -108,8 +108,6 @@ end
 begin   # Ορισμός του pathfinder D* Lite και των ιδιοτήτων του μοντέλου
     # κόστος κίνησης ανά cell από τον συνδυασμένο χάρτη, με γειτονιά 8 κατευθύνσεων (MaxDistance{2})
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "APM"                       # σύντμηση για τα ονόματα των αρχείων εξόδου
-    heuristic_code  = "DF"   # DF: default Agents.jl heuristic, EY: Euclidean, MN: Manhattan
     # D* Lite pathfinder: οι agents δεν περνούν από μη βατά cells (walkmap) και ακολουθούν το cost_metric
     pathfinderPM = DStarLite(space; walkmap = walkmap, cost_metric = cost_metric_obj)
 
@@ -410,8 +408,14 @@ end
 
 # Υπολογισμός των πινάκων τοξικότητας μία φορά (global, χρησιμοποιούνται από την tl_rate)
 Balpha, Btime, Brho = setupToxic()
+# Pathfinder type: "full_field" (ένας D* Lite planner ανά έξοδο, κοινός για όλους τους agents, χωρίς ευρετική) ή
+# "per_agent" (focused D* Lite, Koenig & Likhachev 2002: ένας planner ανά agent ΚΑΙ έξοδο, με s_start = θέση του agent και ευρετική)
+const PATHFINDER_TYPE = lowercase(get(ENV, "EVAC_PATHFINDER", "full_field"))     # επιλογή τύπου: μεταβλητή περιβάλλοντος EVAC_PATHFINDER=full_field | per_agent
+PATHFINDER_TYPE in ("full_field", "per_agent") || error("Άγνωστος τύπος pathfinder «$(PATHFINDER_TYPE)»: χρησιμοποίησε full_field ή per_agent")
+const FOCUSED_HEURISTIC = :delta_cost       # ευρετική h(s_start, s) των focused planners: απόσταση του βασικού metric (MaxDistance) χωρίς penalties, επιτρεπτή (h ≤ c*)
+println("Pathfinder type: ", PATHFINDER_TYPE == "full_field" ? "Full field" : "Per agent")
 # Suffix for exports: new AEGL tables in setupToxic() + 0.5 CM context
-run_export_tag = "newAEGL_0.5CM_uncappedTL"                                 # ετικέτα στα ονόματα αρχείων εξόδου
+run_export_tag = PATHFINDER_TYPE == "per_agent" ? "_pfAgent" : ""   # επίθημα στα ονόματα αρχείων εξόδου: μόνο όταν ο pathfinder δεν είναι ο προεπιλεγμένος
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")            # χρονική σήμανση της εκτέλεσης
 
 
@@ -638,8 +642,8 @@ end
 
 
     # ονόματα αρχείων εξόδου (βίντεο και CSV) με παραμέτρους της εκτέλεσης και timestamp
-    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
-    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"
+    video_file = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)$(run_export_tag)_$(run_timestamp).mp4"
+    csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/DStarLite_SCENARIO_3_$(n_agents)_$(seed)$(run_export_tag)_$(run_timestamp).csv"
 
     # keep a variable for the currently active map index
     # δείκτης του ενεργού concentration map (ξεκινά από το 1ο)
@@ -661,16 +665,27 @@ end
 
     # Initial pathfinding: build planners and extract initial best paths
     path_planning_init_time[] += @elapsed begin
-        global planners
-        # ένας D* Lite planner ανά έξοδο
-        planners = [
-            init_planner(pathfinderPM, goal_cell)
-            for goal_cell in exit_cells
-        ]
+        global planners, agent_planners
+        if PATHFINDER_TYPE == "full_field"
+            # Full field: ένας D* Lite planner ανά έξοδο, κοινός για όλους τους agents (h ≡ 0, τρέχει μέχρι να αδειάσει η ουρά)
+            planners = [
+                init_planner(pathfinderPM, goal_cell)
+                for goal_cell in exit_cells
+            ]
+            agent_planners = Dict{Int,Vector{Any}}()                    # δεν χρησιμοποιείται σε αυτόν τον τύπο
+        else
+            # Per agent: focused D* Lite (Koenig & Likhachev 2002), ένας planner ανά agent ΚΑΙ έξοδο με s_start = cell του agent
+            planners = Any[]                                            # δεν χρησιμοποιείται σε αυτόν τον τύπο
+            agent_planners = Dict{Int,Vector{Any}}(
+                a.id => Any[init_planner(pathfinderPM, goal_cell, world_to_cell(a.pos, grid_dims); heuristic = FOCUSED_HEURISTIC) for goal_cell in exit_cells]
+                for a in allagents(model)
+            )
+        end
         for a in allagents(model)
             start = world_to_cell(a.pos, grid_dims)                     # cell εκκίνησης του agent
 
-            paths = [extract_path(p, start) for p in planners]          # μονοπάτι προς κάθε έξοδο
+            ps = PATHFINDER_TYPE == "full_field" ? planners : agent_planners[a.id]       # οι planners που εξυπηρετούν τον agent
+            paths = Vector{Vector{Tuple{Int,Int}}}([extract_path(p, start) for p in ps]) # μονοπάτι προς κάθε έξοδο
             a.path = choose_best_path(paths)                            # κρατά το συντομότερο
 
             # Note: Do NOT update pathX/pathY here - they are the traveled trail,
@@ -713,15 +728,24 @@ end
 
             # --- Path planning time (replanning): D* Lite update + per-agent path extraction ---
             path_planning_replan_time[] += @elapsed begin
-                # ενημέρωση κάθε planner μόνο για τα cells που άλλαξαν (αυξητικό replanning)
-                for planner in planners
-                    update_after_cm_change!(planner, changed_cells)
+                if PATHFINDER_TYPE == "full_field"
+                    # ενημέρωση κάθε planner (ένας ανά έξοδο) μόνο για τα cells που άλλαξαν (αυξητικό replanning)
+                    for planner in planners
+                        update_after_cm_change!(planner, changed_cells)
+                    end
                 end
                 # νέο μονοπάτι για κάθε agent από την τρέχουσα θέση του
                 for a in allagents(model)
                     start = world_to_cell(a.pos, grid_dims)
 
-                    paths = [extract_path(p, start) for p in planners]
+                    if PATHFINDER_TYPE == "per_agent"
+                        at_goal(a.pos, model.goal) && continue          # agent που έχει ήδη διαφύγει: δεν χρειάζεται ούτε νέα διαδρομή ούτε ενημέρωση των planners του
+                        for planner in agent_planners[a.id]
+                            update_after_cm_change!(planner, changed_cells, start)   # {35''} s_start = θέση agent, {38''-39''} k_m, {40''-47''} αλλαγμένες ακμές, {48''} ComputeShortestPath
+                        end
+                    end
+                    ps = PATHFINDER_TYPE == "full_field" ? planners : agent_planners[a.id]       # οι planners που εξυπηρετούν τον agent
+                    paths = Vector{Vector{Tuple{Int,Int}}}([extract_path(p, start) for p in ps]) # μονοπάτι προς κάθε έξοδο
 
                     a.path = choose_best_path(paths)
 
@@ -778,7 +802,7 @@ end
     # --- Timing summary ---
     # συνολικός χρόνος pathfinding = αρχικός σχεδιασμός + replanning
     total_path_planning = path_planning_init_time[] + path_planning_replan_time[]
-    println("TIMING BREAKDOWN:")
+    println("TIMING BREAKDOWN:  (Pathfinder type: ", PATHFINDER_TYPE == "full_field" ? "Full field" : "Per agent", ")")
     println("  Pathfinding time (total): ", round(total_path_planning; digits=6), " s")
     println("    - Initial pathfinding: ", round(path_planning_init_time[]; digits=6), " s")
     println("    - Replanning during CM changes: ", round(path_planning_replan_time[]; digits=6), " s")
@@ -797,10 +821,10 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")   # φάκελος αποτελεσμάτων
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "DStarLite_SCENARIO_3_$(n_agents)_$(seed_str)$(run_export_tag)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed ή δεν υπάρχει το αρχείο, πάρε το πιο πρόσφατο *DStarLite_SCENARIO_3_*.csv
-        pattern = Regex("^DStarLite_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
+        pattern = Regex("^DStarLite_SCENARIO_3_\\d+_\\d+$(run_export_tag)_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *DStarLite_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -891,7 +915,7 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
+    out_file = joinpath(folder, "DStarLite_SCENARIO_3_hist_$(n_agents)_$(seed_str)$(run_export_tag)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])    # τοξικά φορτία όλων των agents στο συγκεκριμένο frame

@@ -20,11 +20,12 @@ end
 
 
 # Ορισμός του agent: συνεχής 2D agent (pos, vel προστίθενται αυτόματα από το ContinuousAgent)
-# Σημείωση: εδώ δεν υπάρχει πεδίο path· τη διαδρομή την κρατά ο ίδιος ο AStar pathfinder (move_along_route!)
+# Σημείωση: το πεδίο path (grid cells) χρησιμοποιείται ΜΟΝΟ στον τύπο pathfinder full_field· στον per_agent τη διαδρομή την κρατά ο ίδιος ο AStar pathfinder (move_along_route!)
 Agents.@agent struct AgentEscapes(ContinuousAgent{2, Float64})
     age::Float64                    # ηλικία (έτη)
     mass::Float64                   # μάζα (kg), χρησιμοποιείται στις ελαστικές συγκρούσεις
     toxicload::Float64              # συνολικό τρέχον τοξικό φορτίο (άθροισμα TL1+TL2+TL3)
+    path::Vector{Tuple{Int,Int}}    # ΜΟΝΟ grid path (μόνο στον τύπο full_field· στον per_agent μένει κενό)
     pathX::Vector{Float64}          # ιστορικό θέσης x (trail, για visualization)
     pathY::Vector{Float64}          # ιστορικό θέσης y (trail, για visualization)
     TL1::Vector{Float64}            # ιστορικό τοξικού φορτίου για το 1ο σύμπτωμα (οσμή)
@@ -105,8 +106,6 @@ end
 begin   # Ορισμός του pathfinder A* και των ιδιοτήτων του μοντέλου
     # κόστος κίνησης ανά cell από τον συνδυασμένο χάρτη, με γειτονιά 8 κατευθύνσεων (MaxDistance{2})
     cost_metric_obj = AbsolutePenaltyMap(NPM_int, MaxDistance{2}())
-    cost_metric_str = "APM"                       # σύντμηση για τα ονόματα των αρχείων εξόδου
-    heuristic_code  = "DF"   # parity with DStarLite export names (A* uses default heuristic)
     # A* pathfinder: οι agents δεν περνούν από μη βατά cells (walkmap) και ακολουθούν το cost_metric
     pathfinderPM = AStar(space; walkmap = walkmap, cost_metric = cost_metric_obj)
     # ιδιότητες προσβάσιμες μέσα στο μοντέλο ως model.<όνομα>
@@ -117,6 +116,36 @@ begin   # Ορισμός του pathfinder A* και των ιδιοτήτων �
         speed_range = speed_range,
         goal = dests,
     )
+end
+
+
+# Pathfinder type: "per_agent" (ο A* του Agents.jl ανά agent: plan_best_route! από την τρέχουσα θέση του agent προς κάθε έξοδο) ή
+# "full_field" (A* χωρίς σημείο εκκίνησης, h ≡ 0 = Dijkstra προς τα πίσω από κάθε έξοδο: ένα πεδίο κόστους ανά έξοδο, κοινό για όλους τους agents)
+const PATHFINDER_TYPE = lowercase(get(ENV, "EVAC_PATHFINDER", "per_agent"))     # επιλογή τύπου: μεταβλητή περιβάλλοντος EVAC_PATHFINDER=per_agent | full_field
+PATHFINDER_TYPE in ("per_agent", "full_field") || error("Άγνωστος τύπος pathfinder «$(PATHFINDER_TYPE)»: χρησιμοποίησε per_agent ή full_field")
+println("Pathfinder type: ", PATHFINDER_TYPE == "full_field" ? "Full field" : "Per agent")
+
+# Μετακινεί τον agent κατά μήκος ενός προϋπολογισμένου μονοπατιού (λίστα από grid cells), κάνοντας ένα βήμα ταχύτητας `speed` για χρονικό διάστημα `dt` ανά κλήση.
+function move_along_precomputed_path!(agent::AgentEscapes, speed, dt)
+    # Ο agent καλύπτει ακριβώς απόσταση speed*dt ανά βήμα: όταν φτάνει σε ένα waypoint, το υπόλοιπο της απόστασης
+    # συνεχίζει προς τα επόμενα (ίδια συμπεριφορά με το move_along_route! του A* στο Agents.jl). Χωρίς αυτή τη μεταφορά
+    # ο agent θα σταματούσε σε κάθε waypoint και θα έχανε το υπόλοιπο, κινούμενος ~10-15% πιο αργά από το μοντέλο ταχύτητας.
+    remaining = speed * dt                                                                          # απόσταση που απομένει να καλυφθεί σε αυτό το βήμα
+    pos = agent.pos                                                                                 # τρέχουσα θέση
+    while !isempty(agent.path) && remaining > 0                                                     # όσο υπάρχουν waypoints και απομένει απόσταση (με speed == 0 δεν κινείται)
+        cell = agent.path[1]                                                                        # επόμενο waypoint (grid cell)
+        target = SVector{2,Float64}(cell[1], cell[2])                                               # θέση του waypoint
+        d = norm(target .- pos)                                                                     # απόσταση ως το waypoint
+        if d <= remaining                                                                           # το waypoint φτάνεται μέσα σε αυτό το βήμα (και όταν d == 0: χωρίς διαίρεση με 0)
+            pos = target                                                                            # ο agent φτάνει στο waypoint
+            remaining -= d                                                                          # η απόσταση που περισσεύει συνεχίζει προς το επόμενο waypoint
+            popfirst!(agent.path)                                                                   # το waypoint αφαιρείται από το path
+        else
+            pos = pos .+ (target .- pos) ./ d .* remaining                                          # κίνηση κατά την απόσταση που απομένει προς το waypoint (d > remaining > 0)
+            remaining = 0.0                                                                         # η απόσταση του βήματος εξαντλήθηκε
+        end
+    end
+    agent.pos = pos                                                                                 # νέα θέση του agent
 end
 
 
@@ -162,8 +191,13 @@ function agent_step!(person, model)
         speed = 0.0                                                              # θανατηφόρο φορτίο: ο agent ακινητοποιείται
     end
 
-    # κίνηση κατά μήκος της διαδρομής που έχει σχεδιάσει ο A* (plan_best_route!), με ταχύτητα μετατραμένη σε pixels
-    move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
+    if PATHFINDER_TYPE == "per_agent"
+        # κίνηση κατά μήκος της διαδρομής που έχει σχεδιάσει ο A* (plan_best_route!), με ταχύτητα μετατραμένη σε pixels
+        move_along_route!(person, model, model.pathfinderPM, speed * METERS_TO_PIXELS, model.dt)
+    else
+        # full_field: κίνηση κατά μήκος του προϋπολογισμένου path (cells) με ταχύτητα μετατραμένη σε pixels
+        move_along_precomputed_path!(person, speed * METERS_TO_PIXELS, model.dt)
+    end
     push!(person.pathX, person.pos[1])                                           # καταγραφή νέας θέσης για το trail
     push!(person.pathY, person.pos[2])
 end
@@ -219,8 +253,8 @@ for _ in 1:n_agents
     end
 
     # προσθήκη του agent στο μοντέλο με αρχικές τιμές για όλα τα πεδία του AgentEscapes
-    # (vel, age, mass, toxicload = 0., trail pathX/pathY με την αρχική θέση, ιστορικά TL1..TL3 ξεκινούν από 0.0)
-    add_agent!(pos, AgentEscapes, model, vel, age, mass, 0., [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
+    # (vel, age, mass, toxicload = 0., κενό path, trail pathX/pathY με την αρχική θέση, ιστορικά TL1..TL3 ξεκινούν από 0.0)
+    add_agent!(pos, AgentEscapes, model, vel, age, mass, 0., Tuple{Int,Int}[], [pos[1]], [pos[2]], [0.0], [0.0], [0.0])
 end
 
 
@@ -318,7 +352,7 @@ end
 # Υπολογισμός των πινάκων τοξικότητας μία φορά (global, χρησιμοποιούνται από την tl_rate)
 Balpha, Btime, Brho = setupToxic()
 # Suffix for exports: align naming with DStarLite - Scenario 3.jl
-run_export_tag = "newAEGL_0.5CM_uncappedTL"                                 # ετικέτα στα ονόματα αρχείων εξόδου
+run_export_tag = PATHFINDER_TYPE == "full_field" ? "_pfFull" : ""   # επίθημα στα ονόματα αρχείων εξόδου: μόνο όταν ο pathfinder δεν είναι ο προεπιλεγμένος
 run_timestamp = Dates.format(Dates.now(), "yyyy-mm-dd_HH-MM-SS")            # χρονική σήμανση της εκτέλεσης
 
 
@@ -366,6 +400,92 @@ function update_toxic_load(Ct, TLcurrent, dt)
     return TL
 end
 
+
+
+# Μετατροπή θέσης (x, y) σε cell του πλέγματος με περιορισμό εντός των διαστάσεων dims (μέθοδος για Tuple).
+@inline function world_to_cell(p::Tuple{Float64,Float64}, dims::Tuple{Int,Int})
+    i = clamp(Int(floor(p[1])), 1, dims[1])                                                         # ακέραιο τμήμα της 1ης συντεταγμένης, εντός ορίων
+    j = clamp(Int(floor(p[2])), 1, dims[2])                                                         # ακέραιο τμήμα της 2ης συντεταγμένης, εντός ορίων
+    return (i, j)                                                                                   # το cell (i, j)
+end
+
+# Ίδια μετατροπή για θέση τύπου SVector (πεδίο pos των agents).
+@inline function world_to_cell(p::SVector{2,Float64}, dims::Tuple{Int,Int})
+    i = clamp(Int(floor(p[1])), 1, dims[1])                                                         # ακέραιο τμήμα της 1ης συντεταγμένης, εντός ορίων
+    j = clamp(Int(floor(p[2])), 1, dims[2])                                                         # ακέραιο τμήμα της 2ης συντεταγμένης, εντός ορίων
+    return (i, j)                                                                                   # το cell (i, j)
+end
+
+# Από τις διαδρομές προς τις εξόδους επιλέγει τη συντομότερη (λιγότερα cells)· αγνοεί τις κενές και επιστρέφει κενή διαδρομή αν δεν υπάρχει καμία.
+function choose_best_path(paths::Vector{Vector{Tuple{Int,Int}}})
+    filter!(!isempty, paths)                                                                        # αφαίρεση των κενών διαδρομών (in-place)
+    isempty(paths) && return Tuple{Int,Int}[]                                                       # καμία διαδρομή: επιστρέφει κενή
+    return paths[argmin(length.(paths))]                                                            # η διαδρομή με το μικρότερο μήκος
+end
+
+# ---------------- A* full-field: backward Dijkstra from an exit (A* with no start, h ≡ 0) ----------------
+
+# Πεδίο κόστους g(s) = ελάχιστο κόστος από το cell s ως την έξοδο `goal`, με τα κόστη ακμών (delta_cost), τη γειτονιά
+# (get_neighbors) και τον έλεγχο βατότητας (inbounds) του A* pathfinder του Agents.jl, όπως στην find_path.
+# Χωρίς σημείο εκκίνησης δεν υπάρχει ευρετική (h ≡ 0): ο A* γίνεται Dijkstra προς τα πίσω από την έξοδο και τρέχει
+# μέχρι να αδειάσει η open list, δηλαδή υπολογίζει όλα τα προσβάσιμα cells (full-field). Τα κόστη είναι συμμετρικά.
+"""
+    astar_full_field(pathfinder::AStar{2}, goal) -> Matrix{Int}
+
+Cost-to-go field of `goal` (`typemax(Int)` = unreachable): A* of `pathfinder` run backwards from `goal` with
+no start, so `h ≡ 0` and the search is Dijkstra over the whole walkable grid. Same edge costs, neighborhood
+and walkability test as `Pathfinding.find_path`. Not incremental: recomputed from scratch on every call.
+"""
+function astar_full_field(pathfinder::AStar{2}, goal::Tuple{Int,Int})
+    g = fill(typemax(Int), size(pathfinder.walkmap))                                                # g = ∞ (typemax) για όλα τα cells
+    Pathfinding.inbounds(goal, pathfinder) || return g                                              # μη βατή έξοδος: κανένα cell δεν τη φτάνει
+    g[goal...] = 0                                                                                  # κόστος της εξόδου = 0
+    open_list = Pathfinding.PriorityQueue{Tuple{Int,Int},Int}()                                     # open list του A* (ίδια δομή με την find_path)· κλειδί = g, αφού h ≡ 0
+    open_list[goal] = 0                                                                             # η αναζήτηση ξεκινά από την έξοδο
+    while !isempty(open_list)                                                                       # μέχρι να αδειάσει η open list (full-field)
+        cur, g_cur = Pathfinding.dequeue_pair!(open_list)                                           # το cell με το μικρότερο g
+        for nbor in Pathfinding.get_neighbors(cur, pathfinder)                                      # γείτονες με τη γειτονιά του A*
+            Pathfinding.inbounds(nbor, pathfinder) || continue                                      # μόνο εντός ορίων και βατοί
+            new_g = g_cur + Pathfinding.delta_cost(pathfinder, nbor, cur)                           # κόστος από τον γείτονα ως την έξοδο μέσω του cur
+            if new_g < g[nbor...]                                                                   # βρέθηκε φθηνότερη διαδρομή
+                g[nbor...] = new_g                                                                  # ενημέρωση του g
+                open_list[nbor] = new_g                                                             # εισαγωγή/μείωση κλειδιού στην open list
+            end
+        end
+    end
+    return g                                                                                        # το πεδίο κόστους της εξόδου
+end
+
+# Διαδρομή από το cell `start` ως την έξοδο `goal` πάνω στο πεδίο g: σε κάθε βήμα μετάβαση στον γείτονα που ελαχιστοποιεί
+# c(s,s') + g(s'), με την ίδια σειρά γειτόνων και τον ίδιο κανόνα με την extract_path του D* Lite.
+"""
+    extract_field_path(pathfinder::AStar{2}, g, start, goal; max_steps = 10_000) -> Vector{Tuple{Int,Int}}
+
+Greedy descent of the cost-to-go field `g` from `start` to `goal` (same rule and neighbor order as the
+D* Lite `extract_path`). Unreachable neighbors (`typemax(Int)`) are skipped.
+"""
+function extract_field_path(pathfinder::AStar{2}, g::Matrix{Int}, start::Tuple{Int,Int}, goal::Tuple{Int,Int}; max_steps = 10_000)
+    path = Tuple{Int,Int}[start]                                                                    # η διαδρομή ξεκινά από το cell του agent
+    cur = start                                                                                     # τρέχον cell
+    for _ in 1:max_steps                                                                            # όριο βημάτων για προστασία από ατέρμονο βρόχο
+        cur == goal && break                                                                        # έφτασε στην έξοδο
+        best = nothing                                                                              # καλύτερος γείτονας
+        best_val = typemax(Int)                                                                     # και η τιμή του c(cur,n) + g(n)
+        for n in Pathfinding.get_neighbors(cur, pathfinder)                                         # γείτονες με τη γειτονιά του A*
+            Pathfinding.inbounds(n, pathfinder) || continue                                         # μόνο εντός ορίων και βατοί
+            g[n...] == typemax(Int) && continue                                                     # μη προσβάσιμος γείτονας (αποφυγή υπερχείλισης)
+            val = Pathfinding.delta_cost(pathfinder, cur, n) + g[n...]                              # c(cur,n) + g(n)
+            if val < best_val                                                                       # νέο ελάχιστο
+                best_val = val
+                best = n
+            end
+        end
+        best === nothing && break                                                                   # καμία γνωστή διαδρομή
+        cur = best                                                                                  # μετάβαση στον καλύτερο γείτονα
+        push!(path, cur)                                                                            # η επόμενη κορυφή της διαδρομής
+    end
+    return path                                                                                     # η διαδρομή (cells) ως την έξοδο
+end
 
 
 function personcolor(person::AgentEscapes)  # Χρώμα του agent ανάλογα με το toxicload
@@ -497,8 +617,8 @@ end
 
 
 # ονόματα αρχείων εξόδου (βίντεο και CSV) με παραμέτρους της εκτέλεσης και timestamp
-video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4"
-csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv"
+video_file = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)$(run_export_tag)_$(run_timestamp).mp4"
+csv_file   = "SCENARIOS/SCENARIO 3/Simulation Results/AStar_SCENARIO_3_$(n_agents)_$(seed)$(run_export_tag)_$(run_timestamp).csv"
 
 # keep a variable for the currently active map index
 # δείκτης του ενεργού concentration map (ξεκινά από το 1ο)
@@ -510,10 +630,24 @@ path_planning_replan_time = Ref(0.0)    # επανασχεδιασμός κατ�
 simulation_time = Ref(0.0)              # χρόνος των κλήσεων step! μόνο
 
 # Initial pathfinding: same placement as DStarLite (inside @time block, before record)
-# Αρχικός σχεδιασμός: ο A* υπολογίζει για κάθε agent την καλύτερη διαδρομή προς τις εξόδους (dests)
+# Αρχικός σχεδιασμός των διαδρομών (εξαρτάται από τον τύπο pathfinder)
+grid_dims = size(NPM_int)                                           # διαστάσεις του grid
+exit_cells = [world_to_cell(g, grid_dims) for g in model.goal]      # οι έξοδοι ως cells του grid
+fields_ref = Ref(Matrix{Int}[])                                     # πεδία κόστους ανά έξοδο (μόνο στον τύπο full_field)
 path_planning_init_time[] += @elapsed begin
-    for a in allagents(model)
-        plan_best_route!(a, dests, model.pathfinderPM)
+    if PATHFINDER_TYPE == "per_agent"
+        # Per agent: ο A* του Agents.jl υπολογίζει για κάθε agent την καλύτερη διαδρομή προς τις εξόδους (dests)
+        for a in allagents(model)
+            plan_best_route!(a, dests, model.pathfinderPM)
+        end
+    else
+        # Full field: ένα πεδίο κόστους ανά έξοδο (A* χωρίς start, h ≡ 0), κοινό για όλους τους agents
+        fields_ref[] = [astar_full_field(model.pathfinderPM, goal_cell) for goal_cell in exit_cells]
+        for a in allagents(model)
+            start = world_to_cell(a.pos, grid_dims)                 # cell εκκίνησης του agent
+            paths = Vector{Vector{Tuple{Int,Int}}}([extract_field_path(model.pathfinderPM, fld, start, goal) for (fld, goal) in zip(fields_ref[], exit_cells)])   # διαδρομή προς κάθε έξοδο
+            a.path = choose_best_path(paths)                        # κρατά τη συντομότερη
+        end
     end
 end
 
@@ -541,9 +675,19 @@ record(fig, video_file, 1:T; framerate=30) do frame
             pm = Pathfinding.penaltymap(model.pathfinderPM)
             pm .= NPM_int
 
-            # νέα διαδρομή για κάθε agent από την τρέχουσα θέση του
-            for a in allagents(model)
-                plan_best_route!(a, model.goal, model.pathfinderPM)
+            if PATHFINDER_TYPE == "per_agent"
+                # νέα διαδρομή για κάθε agent από την τρέχουσα θέση του (A* από την αρχή)
+                for a in allagents(model)
+                    plan_best_route!(a, model.goal, model.pathfinderPM)
+                end
+            else
+                # Full field: νέος υπολογισμός από την αρχή των πεδίων κόστους (ένα ανά έξοδο) και νέα διαδρομή κάθε agent από τα πεδία
+                fields_ref[] = [astar_full_field(model.pathfinderPM, goal_cell) for goal_cell in exit_cells]
+                for a in allagents(model)
+                    start = world_to_cell(a.pos, grid_dims)         # τρέχον cell του agent
+                    paths = Vector{Vector{Tuple{Int,Int}}}([extract_field_path(model.pathfinderPM, fld, start, goal) for (fld, goal) in zip(fields_ref[], exit_cells)])   # διαδρομή προς κάθε έξοδο
+                    a.path = choose_best_path(paths)                # κρατά τη συντομότερη
+                end
             end
         end
 
@@ -589,7 +733,7 @@ record(fig, video_file, 1:T; framerate=30) do frame
     # --- Timing summary ---
     # συνολικός χρόνος pathfinding = αρχικός σχεδιασμός + replanning
     total_path_planning = path_planning_init_time[] + path_planning_replan_time[]
-    println("TIMING BREAKDOWN:")
+    println("TIMING BREAKDOWN:  (Pathfinder type: ", PATHFINDER_TYPE == "full_field" ? "Full field" : "Per agent", ")")
     println("  Pathfinding time (total): ", round(total_path_planning; digits=6), " s")
     println("    - Initial pathfinding: ", round(path_planning_init_time[]; digits=6), " s")
     println("    - Replanning during CM changes: ", round(path_planning_replan_time[]; digits=6), " s")
@@ -604,10 +748,10 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     folder = joinpath("SCENARIOS","SCENARIO 3", "Simulation Results")   # φάκελος αποτελεσμάτων
 
     # Φόρτωση CSV με step, agent_id, toxicload
-    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).csv")
+    csv_file = seed_str === nothing ? nothing : joinpath(folder, "AStar_SCENARIO_3_$(n_agents)_$(seed)$(run_export_tag)_$(run_timestamp).csv")
     if csv_file === nothing || !isfile(csv_file)
         # αν δεν δοθεί seed ή δεν υπάρχει το αρχείο, πάρε το πιο πρόσφατο AStar_SCENARIO_3_*.csv
-        pattern = Regex("^AStar_SCENARIO_3_.*_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_.*\\.csv\$")
+        pattern = Regex("^AStar_SCENARIO_3_\\d+_\\d+$(run_export_tag)_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.csv\$")
         csvs = filter(f -> occursin(pattern, f), readdir(folder))
         @assert !isempty(csvs) "Δεν βρέθηκαν αρχεία *AStar_SCENARIO_3_$(seed)*.csv στο $(folder)."
         stats = stat.(joinpath.(Ref(folder), csvs))
@@ -699,7 +843,7 @@ if make_histogram   # Ιστόγραμμα τοξικού φορτίου ανά 
     barplot!(ax, [x3_pos], y3; width = bin_w_edge, color = :crimson, strokewidth = 0)
 
     # --- Εγγραφή βίντεο (αλλάζουν μόνο οι Υ-τιμές) ---
-    out_file = joinpath(folder, "AStar_SCENARIO_3_hist__$(n_agents)_$(seed_str)_$(cost_metric_str)_$(heuristic_code)_$(run_export_tag)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
+    out_file = joinpath(folder, "AStar_SCENARIO_3_hist_$(n_agents)_$(seed_str)$(run_export_tag)_$(run_timestamp).mp4")   # αρχείο εξόδου του ιστογράμματος
     record(fig, out_file, 1:T_play; framerate = 30) do frame
         frame_obs[] = frame
         tl = Vector(df[df.step .== frame, :toxicload])    # τοξικά φορτία όλων των agents στο συγκεκριμένο frame
